@@ -1,12 +1,16 @@
 import itertools
 from src.utils.functions import load_config
 import torch
-from lora_diffusion import inject_trainable_lora
+from lora_diffusion import (
+    inject_trainable_lora,
+    extract_lora_ups_down,
+    save_lora_weight,
+)
 from diffusers import UNet2DConditionModel, DDPMScheduler, AutoencoderKL
-from transformers import CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 from datasets import load_dataset, Image
 from torch.nn import MSELoss
-from torch.optim import AdamW
+from bitsandbytes.optim import AdamW8bit
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -36,7 +40,7 @@ def main(config):
         variant='fp16',
         torch_dtype=torch.float16,
     ).to(device)
-    text_encoder.requires_grad_(True)
+    text_encoder.requires_grad_(False)
 
     tokenizer = CLIPTokenizer.from_pretrained(
         config['model_name'],
@@ -44,7 +48,7 @@ def main(config):
         variant='fp16',
         torch_dtype=torch.float16,
     )
-    
+
     vae = AutoencoderKL.from_pretrained(
         config['model_name'],
         subfolder='vae',
@@ -53,18 +57,18 @@ def main(config):
     ).to(device)
     vae.requires_grad_(False)
 
-    unet_lora_params, train_names = inject_trainable_lora(
+    unet_lora_params, _ = inject_trainable_lora(
         model=unet,
-        target_replace_module=config['lora_1']['target_replace_module'],
-        r=config['lora_1']['r'],
-        dropout_p=config['lora_1']['dropout'],
+        r=config['r'],
+        dropout_p=config['dropout'],
     )
 
-    optimizer = AdamW(
-        itertools.chain(*unet_lora_params, text_encoder.parameters()),
-        lr=config['lora_1']['lr'],
-        weight_decay=config['lora_1']['weight_decay'],
+    optimizer = AdamW8bit(
+        list(itertools.chain(*unet_lora_params)),
+        lr=config['lr'],
+        weight_decay=config['weight_decay'],
     )
+
     loss_fn = MSELoss()
 
     image_transforms = transforms.Compose(
@@ -93,33 +97,53 @@ def main(config):
     dataset = dataset.cast_column('image', Image(mode='RGB'))
     dataset.set_transform(transform_data)
 
-    dataloader = DataLoader(dataset, config['lora_1']['batch_size'], shuffle=True)
+    dataloader = DataLoader(dataset, config['batch_size'], shuffle=True)
 
-    for epoch in range(config['lora_1']['epochs']):
+    epochs = config['epochs']
+
+    num_training_steps = len(dataloader) * epochs
+    warmup_steps = int(num_training_steps * 0.1)  # 10% of total steps for warmup
+
+    lr_scheduler = get_scheduler(
+        name='linear',
+        optimizer=optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=num_training_steps,
+    )
+
+    for epoch in range(epochs):
         unet.train()
-        text_encoder.train()
         running_loss = 0.0
 
-        for batch in tqdm(dataloader):
+        for batch in tqdm(dataloader, desc=f'[{epoch + 1}|{epochs}]'):
             optimizer.zero_grad()
 
             image = batch['image'].to(device)
-            input_ids = torch.stack([torch.tensor(ids) for ids in batch['input_ids']]).to(device)
+            input_ids = torch.stack(
+                [torch.tensor(ids) for ids in batch['input_ids']]
+            ).to(device)
             input_ids = input_ids.T
-            attention_mask = torch.stack([torch.tensor(mask) for mask in batch['attention_mask']]).to(device)
+            attention_mask = torch.stack(
+                [torch.tensor(mask) for mask in batch['attention_mask']]
+            ).to(device)
             attention_mask = attention_mask.T
 
             latents = vae.encode(image.to(dtype=torch.float16)).latent_dist.sample()
             latents = latents * 0.18215
 
-            timesteps = torch.randint(0, scheduler.config.num_train_timesteps, (latents.shape[0],), device=device)
+            timesteps = torch.randint(
+                0,
+                scheduler.config.num_train_timesteps,
+                (latents.shape[0],),
+                device=device,
+            )
             timesteps = timesteps.long()
 
             noise = torch.randn_like(latents)
             noise_latents = scheduler.add_noise(latents, noise, timesteps)
 
             encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
-            
+
             output = unet(
                 sample=noise_latents,
                 timestep=timesteps,
@@ -127,24 +151,26 @@ def main(config):
                 encoder_attention_mask=attention_mask,
             ).sample
 
-            if scheduler.config.prediction_type == "epsilon":
+            if scheduler.config.prediction_type == 'epsilon':
                 target = noise
-            elif scheduler.config.prediction_type == "v_prediction":
+            elif scheduler.config.prediction_type == 'v_prediction':
                 target = scheduler.get_velocity(latents, noise, timesteps)
             else:
                 raise ValueError(
-                    f"Unknown prediction type {scheduler.config.prediction_type}"
+                    f'Unknown prediction type {scheduler.config.prediction_type}'
                 )
-            
+
             loss = loss_fn(output.float(), target.float())
-            print(loss.item())
             running_loss += loss.item()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
             optimizer.step()
+            lr_scheduler.step()
 
         print(running_loss / len(dataloader))
-            
 
+    print('LoRA training finished')
+    save_lora_weight(unet, f'./src/data/{config["version"]}/lora_weight.pt')
 
 
 if __name__ == '__main__':
