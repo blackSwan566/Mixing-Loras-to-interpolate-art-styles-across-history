@@ -9,8 +9,8 @@ def main(config):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     base_path = './src/data'
 
-    if not os.path.isdir(f'{base_path}/{config["version"]}/images'):
-        os.mkdir(f'{base_path}/{config["version"]}/images')
+    if not os.path.isdir(f'{base_path}/{config["style"]}/{config["version"]}/images'):
+        os.mkdir(f'{base_path}/{config["style"]}/{config["version"]}/images')
 
     pipe = StableDiffusionPipeline.from_pretrained(
         config['model_name'],
@@ -21,11 +21,11 @@ def main(config):
     torch.manual_seed(1)
     image = pipe(prompt,  num_inference_steps=50, guidance_scale=7).images[0]
 
-    image.save(f'{base_path}/{config["version"]}/images/no_lora.png')
+    image.save(f'{base_path}/{config["style"]}/{config["version"]}/images/no_lora.png')
 
     patch_pipe(
         pipe,
-        f'{base_path}/{config["version"]}/lora_weight.pt',
+        f'{base_path}/{config["style"]}/{config["version"]}/lora_weight.pt',
         patch_unet=True,
         patch_text=False,
         patch_ti=False,
@@ -35,7 +35,7 @@ def main(config):
 
     torch.manual_seed(1)
     image = pipe(prompt, num_inference_steps=50, guidance_scale=7).images[0]
-    image.save(f'{base_path}/{config["version"]}/images/lora.jpg')
+    image.save(f'{base_path}/{config["style"]}/{config["version"]}/images/lora.jpg')
 
 
 if __name__ == '__main__':
