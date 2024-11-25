@@ -102,7 +102,7 @@ def main(config):
     epochs = config['epochs']
 
     num_training_steps = len(dataloader) * epochs
-    warmup_steps = int(num_training_steps * 0.1)  # 10% of total steps for warmup
+    warmup_steps = int(num_training_steps * 0.1)
 
     lr_scheduler = get_scheduler(
         name='linear',
@@ -170,7 +170,7 @@ def main(config):
         print(running_loss / len(dataloader))
 
     print('LoRA training finished')
-    save_lora_weight(unet, f'./src/data/{config["version"]}/lora_weight.pt')
+    save_lora_weight(unet, f'./src/data/{config["style"]}/{config["version"]}/lora_weight.pt')
 
 
 if __name__ == '__main__':
