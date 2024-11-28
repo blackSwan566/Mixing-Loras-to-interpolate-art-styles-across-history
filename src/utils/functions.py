@@ -15,7 +15,9 @@ def load_config() -> dict:
 
     arguments = parser.parse_args()
 
-    with open(f'src/data/{arguments.style}/{arguments.version}/config.yaml', 'r') as file:
+    with open(
+        f'src/data/{arguments.style}/{arguments.version}/config.yaml', 'r'
+    ) as file:
         config = yaml.safe_load(file)
 
     return config
