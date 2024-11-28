@@ -16,10 +16,11 @@ def main(config):
         config['model_name'],
         torch_dtype=torch.float16,
     ).to(device)
+    pipe.safety_checker = None
 
-    prompt = 'a man with yellow hair and a hoodie and brown eyes'
-    torch.manual_seed(1)
-    image = pipe(prompt,  num_inference_steps=50, guidance_scale=7).images[0]
+    prompt = 'A painting with mountains.'
+    torch.manual_seed(42)
+    image = pipe(prompt, num_inference_steps=50, guidance_scale=2).images[0]
 
     image.save(f'{base_path}/{config["style"]}/{config["version"]}/images/no_lora.png')
 
@@ -33,8 +34,8 @@ def main(config):
 
     tune_lora_scale(pipe.unet, 1.00)
 
-    torch.manual_seed(1)
-    image = pipe(prompt, num_inference_steps=50, guidance_scale=7).images[0]
+    torch.manual_seed(42)
+    image = pipe(prompt, num_inference_steps=50, guidance_scale=2).images[0]
     image.save(f'{base_path}/{config["style"]}/{config["version"]}/images/lora.jpg')
 
 
