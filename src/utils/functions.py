@@ -32,7 +32,7 @@ def load_config(task: str) -> Tuple[dict, str]:
 
         dir_path = './src/data/'
 
-        task_path = dir_path + task + '/'
+        task_path = dir_path + task + '/' + config['style']
 
         if not os.path.exists(task_path):
             os.makedirs(task_path)
