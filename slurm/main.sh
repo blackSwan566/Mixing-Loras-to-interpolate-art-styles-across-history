@@ -5,9 +5,8 @@
 #SBATCH --mem=8G
 #SBATCH --output=diffusion.out
 
-STYLE=$1
-VERSION=$2
+TASK=$1
 
 source venv/bin/activate
 
-python train_lora.py --style $STYLE --version $VERSION
+python main.py $TASK

@@ -5,8 +5,15 @@ import torch
 from lora_diffusion import (
     inject_trainable_lora,
     save_lora_weight,
+    patch_pipe,
+    tune_lora_scale,
 )
-from diffusers import UNet2DConditionModel, DDPMScheduler, AutoencoderKL
+from diffusers import (
+    UNet2DConditionModel,
+    DDPMScheduler,
+    AutoencoderKL,
+    StableDiffusionPipeline,
+)
 from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 from torch.nn import MSELoss
 from bitsandbytes.optim import AdamW8bit
@@ -15,15 +22,15 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import webdataset as wds
 import json
-import logging
+import argparse
+import pandas as pd
+import re
+import os
+import io
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-logger = logging.getLogger(__name__)
 
-
-def main(config):
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
+def training(config: dict, base_dir: str, device: str):
+    # load models
     scheduler = DDPMScheduler.from_pretrained(
         config['model_name'],
         subfolder='scheduler',
@@ -62,20 +69,14 @@ def main(config):
     ).to(device)
     vae.requires_grad_(False)
 
+    # inject LoRA
     unet_lora_params, _ = inject_trainable_lora(
         model=unet,
         r=config['r'],
         dropout_p=config['dropout'],
     )
 
-    optimizer = AdamW8bit(
-        list(itertools.chain(*unet_lora_params)),
-        lr=config['lr'],
-        weight_decay=config['weight_decay'],
-    )
-
-    loss_fn = MSELoss()
-
+    # prepare data
     image_transforms = transforms.Compose(
         [
             transforms.Resize((512, 512)),
@@ -85,7 +86,7 @@ def main(config):
     )
 
     def tokenization(example):
-        text = f'A painting from {example["json"]["author_name"]} with the name {example["json"]["painting_name"]}'
+        text = f'A painting from the art style "{config["style"]}"'
         return tokenizer(text, padding='max_length')
 
     def apply_transform(sample):
@@ -113,7 +114,10 @@ def main(config):
 
     # prepare dataloader
     dataset = (
-        wds.WebDataset(f'{config["style"]}_dataset.tar', shardshuffle=1024)
+        wds.WebDataset(
+            f'./data/{config["dataset"]}/{config["style"]}_dataset.tar',
+            shardshuffle=1024,
+        )
         .decode('pil')
         .shuffle(1024)
         .map(apply_transform)
@@ -134,6 +138,15 @@ def main(config):
 
     total_samples = read_total_samples_from_tar(f'{config["style"]}_dataset.tar')
     epochs = config['epochs']
+
+    # prepare training parameters
+    optimizer = AdamW8bit(
+        list(itertools.chain(*unet_lora_params)),
+        lr=config['lr'],
+        weight_decay=config['weight_decay'],
+    )
+
+    loss_fn = MSELoss()
 
     num_training_steps = total_samples * epochs
     warmup_steps = int(num_training_steps * 0.1)
@@ -160,10 +173,12 @@ def main(config):
                 set_to_none=True
             ) if step % accumulation_steps == 0 else None
 
+            # load data to device
             image = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
 
+            # create noise latents
             latents = vae.encode(image.to(dtype=torch.float16)).latent_dist.sample()
             latents = latents * 0.18215
 
@@ -178,8 +193,10 @@ def main(config):
             noise = torch.randn_like(latents)
             noise_latents = scheduler.add_noise(latents, noise, timesteps)
 
+            # encode input
             encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
 
+            # forward pass
             output = unet(
                 sample=noise_latents,
                 timestep=timesteps,
@@ -187,6 +204,7 @@ def main(config):
                 encoder_attention_mask=attention_mask,
             ).sample
 
+            # get target value
             if scheduler.config.prediction_type == 'epsilon':
                 target = noise
             elif scheduler.config.prediction_type == 'v_prediction':
@@ -196,12 +214,13 @@ def main(config):
                     f'Unknown prediction type {scheduler.config.prediction_type}'
                 )
 
+            # loss calculation
             loss = loss_fn(output.float(), target.float())
             loss = loss / accumulation_steps
             running_loss += loss.item()
-
             loss.backward()
 
+            # gradient accumulation
             if (step + 1) % accumulation_steps == 0 or (step + 1) == total_samples:
                 torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
                 optimizer.step()
@@ -213,11 +232,146 @@ def main(config):
 
     print('LoRA training finished')
     print(losses)
-    save_lora_weight(
-        unet, f'./src/data/{config["style"]}/{config["version"]}/lora_weight.pt'
+    save_lora_weight(unet, f'{base_dir}/lora_weight.pt')
+
+
+def inference(config: dict, base_dir: str, device: str):
+    torch.manual_seed(42)
+
+    # load diffusion model
+    pipe = StableDiffusionPipeline.from_pretrained(
+        config['model_name'],
+        torch_dtype=torch.float16,
+    ).to(device)
+    pipe.safety_checker = None
+
+    # create image without LoRA
+    image = pipe(
+        config['prompt'],
+        num_inference_steps=config['num_inference_steps'],
+        guidance_scale=config['guidance_scale'],
+    ).images[0]
+    image.save(f'{base_dir}/no_lora.png')
+
+    # load weights
+    patch_pipe(
+        pipe,
+        config['data_path'],
+        patch_unet=True,
+        patch_text=False,
+        patch_ti=False,
     )
+    tune_lora_scale(pipe.unet, 1.00)
+
+    # create image with LoRA
+    image = pipe(
+        config['prompt'],
+        num_inference_steps=config['num_inference_steps'],
+        guidance_scale=config['guidance_scale'],
+    ).images[0]
+    image.save(f'{base_dir}/lora.png')
+
+
+def data_preparation(config: dict, base_dir: str):
+    # declare paths
+    image_data = f'./{base_dir}/{config["dataset"]}'
+    csv = f'./{base_dir}/{config["dataset"]}_label.csv'
+    tar_archive = f'{base_dir}/{config["style"]}_dataset.tar'
+
+    # read csv
+    labels = pd.read_csv(csv, sep='\t')
+    labels.columns = labels.columns.str.strip()
+
+    # counter
+    total_samples = 0
+
+    with tarfile.open(tar_archive, 'w') as tar:
+        for _, row in labels.iterrows():
+            image_id = row['ID']
+            author = row['AUTHOR']
+            title = row['TITLE']
+            date = row['DATE']
+
+            # Delete everything drom date thats not a number
+            date_numbers = re.sub(r'\D', '', date)
+            if not date_numbers:
+                # skip rows without numbers
+                print(f'Skipping row with invalid date: {date}')
+                continue
+
+            # filter art epochs by numbers of date: everything <1490 -> middleage everything >= 1490 & <=1600 -> renaissance everything>=1600 & <=1720 -> baroque
+            if (
+                config['start_date_epoch']
+                <= int(date_numbers)
+                <= config['end_date_epoch']
+            ):
+                image_path = os.path.join(image_data, f'{image_id}.jpg')
+
+                if os.path.exists(image_path):
+                    tar.add(image_path, arcname=f'{image_id}.jpg')
+
+                    metadata = {
+                        'painting_name': title,
+                        'author_name': author,
+                        'time': row.get('TIMELINE', 'Unknown'),
+                        'date': row.get('DATE', 'Unknown'),
+                        'location': row.get('LOCATION', 'Unknown'),
+                    }
+                    json_data = json.dumps(metadata)
+                    json_bytes = json_data.encode('utf-8')
+
+                    json_info = tarfile.TarInfo(name=f'{image_id}.json')
+                    json_info.size = len(json_bytes)
+                    tar.addfile(json_info, io.BytesIO(json_bytes))
+
+                    total_samples += 1
+
+                else:
+                    print(f'Image {image_path} not found')
+
+        total_metadata = {'total_samples': total_samples}
+        total_metadata_json = json.dumps(total_metadata)
+        total_metadata_bytes = total_metadata_json.encode('utf-8')
+
+        total_metadata_info = tarfile.TarInfo(name='total_metadata.json')
+        total_metadata_info.size = len(total_metadata_bytes)
+        tar.addfile(total_metadata_info, io.BytesIO(total_metadata_bytes))
+
+        print(f'Tar archive created: {tar_archive}')
+
+
+def main(args):
+    config, base_dir = load_config(task=args.task)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    if args.task == 'training':
+        training(config, base_dir, device)
+
+    elif args.task == 'inference':
+        inference(config, base_dir, device)
+
+    elif args.task == 'data_preparation':
+        data_preparation(config, base_dir)
 
 
 if __name__ == '__main__':
-    cfg = load_config()
-    main(cfg)
+    parser = argparse.ArgumentParser(description='Fine Tune diffusion model')
+
+    subparsers = parser.add_subparsers(
+        dest='task', required=True, help='run specific task'
+    )
+
+    training_parser = subparsers.add_parser(
+        'training', help='Fine Tune a given diffusion model with LoRA'
+    )
+
+    inference_parser = subparsers.add_parser(
+        'inference', help='Inference of the fine-tuned diffusion model'
+    )
+
+    data_preparation_parser = subparsers.add_parser(
+        'data_preparation', help='prepares the data'
+    )
+
+    args = parser.parse_args()
+    main(args)
