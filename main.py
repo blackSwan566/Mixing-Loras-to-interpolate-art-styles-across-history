@@ -21,9 +21,11 @@ from torchvision import transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import webdataset as wds
+from huggingface_hub import get_token
 import json
 import argparse
 import pandas as pd
+from datasets import load_dataset
 import re
 import os
 import io
@@ -111,7 +113,12 @@ def training(config: dict, base_dir: str, device: str):
                 [torch.tensor(mask) for mask in attention_masks]
             ),
         }
-
+    
+    hf_token = get_token()
+    url = "https://huggingface.co/datasets/timm/imagenet-12k-wds/resolve/main/imagenet12k-train-{{0000..1023}}.tar"
+    url = f"pipe:curl -s -L {url} -H 'Authorization:Bearer {hf_token}'"
+    dataset = wds.WebDataset(url).decode()
+    
     # prepare dataloader
     dataset = (
         wds.WebDataset(
@@ -188,6 +195,7 @@ def training(config: dict, base_dir: str, device: str):
                 (latents.shape[0],),
                 device=device,
             )
+
             timesteps = timesteps.long()
 
             noise = torch.randn_like(latents)
