@@ -21,9 +21,11 @@ from torchvision import transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import webdataset as wds
+from huggingface_hub import get_token
 import json
 import argparse
 import pandas as pd
+from datasets import load_dataset
 import re
 import os
 import io
@@ -224,6 +226,7 @@ def training(config: dict, base_dir: str, device: str):
                 (latents.shape[0],),
                 device=device,
             )
+
             timesteps = timesteps.long()
 
             noise = torch.randn_like(latents)
