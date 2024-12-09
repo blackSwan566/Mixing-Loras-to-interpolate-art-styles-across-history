@@ -200,14 +200,11 @@ def training(config: dict, base_dir: str, device: str):
     for epoch in range(epochs):
         unet.train()
         running_loss = 0.0
+        optimizer.zero_grad(set_to_none=True)
 
         for step, batch in enumerate(
             tqdm(train_dataloader, desc=f'Epoch:[{epoch + 1}|{epochs}]')
-        ):
-            optimizer.zero_grad(
-                set_to_none=True
-            ) if step % accumulation_steps == 0 else None
-            
+        ):  
             # load data to device
             image = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
@@ -260,6 +257,7 @@ def training(config: dict, base_dir: str, device: str):
                 torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
                 optimizer.step()
                 lr_scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
 
         epoch_loss = running_loss / train_samples
         losses.append(epoch_loss)
