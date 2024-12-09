@@ -1,7 +1,7 @@
 version: 1
 model_name: 'CompVis/stable-diffusion-v1-4'
 style: 'middleage'
-data_path: ''
+data_path: 'src/data/middleage/1.0/lora_weight.pt'
 prompt: 'A painting with mountains.'
 num_inference_steps: 50
 guidance_scale: 2
