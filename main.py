@@ -30,7 +30,6 @@ import io
 from copy import deepcopy
 
 
-
 def training(config: dict, base_dir: str, device: str):
     # load models
     scheduler = DDPMScheduler.from_pretrained(
@@ -81,7 +80,7 @@ def training(config: dict, base_dir: str, device: str):
     )
 
     # compile unet
-    #unet = torch.compile(unet, mode='reduce-overhead')
+    # unet = torch.compile(unet, mode='reduce-overhead')
 
     # prepare data
     image_transforms = transforms.Compose(
@@ -122,7 +121,7 @@ def training(config: dict, base_dir: str, device: str):
     # train data
     train_dataset = (
         wds.WebDataset(
-            f'./data/{config["dataset"]}/{config["style"]}_dataset.tar', # TODO change path to train or test
+            f'./data/{config["dataset"]}/{config["style"]}_dataset.tar',  # TODO change path to train or test
             shardshuffle=1024,
         )
         .decode('pil')
@@ -137,7 +136,7 @@ def training(config: dict, base_dir: str, device: str):
     # test data
     test_dataset = (
         wds.WebDataset(
-            f'./data/{config["dataset"]}/{config["style"]}_dataset.tar', # TODO change path to train or test
+            f'./data/{config["dataset"]}/{config["style"]}_dataset.tar',  # TODO change path to train or test
             shardshuffle=1024,
         )
         .decode('pil')
@@ -157,9 +156,14 @@ def training(config: dict, base_dir: str, device: str):
                     total_metadata = json.load(f)
 
                     return total_metadata.get('total_samples', 0)
+
     # get train and test length
-    train_samples = read_total_samples_from_tar(f'./data/{config["dataset"]}/{config["style"]}_dataset.tar') # TODO change path for train and test
-    test_samples = read_total_samples_from_tar(f'./data/{config["dataset"]}/{config["style"]}_dataset.tar')
+    train_samples = read_total_samples_from_tar(
+        f'./data/{config["dataset"]}/{config["style"]}_dataset.tar'
+    )  # TODO change path for train and test
+    test_samples = read_total_samples_from_tar(
+        f'./data/{config["dataset"]}/{config["style"]}_dataset.tar'
+    )
 
     # prepare training parameters
     optimizer = AdamW8bit(
@@ -204,7 +208,7 @@ def training(config: dict, base_dir: str, device: str):
 
         for step, batch in enumerate(
             tqdm(train_dataloader, desc=f'Epoch:[{epoch + 1}|{epochs}]')
-        ):  
+        ):
             # load data to device
             image = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
@@ -276,7 +280,9 @@ def training(config: dict, base_dir: str, device: str):
                     attention_mask = batch['attention_mask'].to(device)
 
                     # create noise latents
-                    latents = vae.encode(image.to(dtype=torch.float16)).latent_dist.sample()
+                    latents = vae.encode(
+                        image.to(dtype=torch.float16)
+                    ).latent_dist.sample()
                     latents = latents * 0.18215
 
                     timesteps = torch.randint(
@@ -291,7 +297,9 @@ def training(config: dict, base_dir: str, device: str):
                     noise_latents = scheduler.add_noise(latents, noise, timesteps)
 
                     # encode input
-                    encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
+                    encoder_hidden_states = text_encoder(input_ids, return_dict=False)[
+                        0
+                    ]
 
                     # forward pass
                     output = unet(
@@ -314,8 +322,8 @@ def training(config: dict, base_dir: str, device: str):
                     # loss calculation
                     loss = loss_fn(output.float(), target.float())
                     test_loss += loss.item()
-                
-            print(f"Epoch {epoch + 1}, Test Loss: {test_loss / test_samples:.4f}")
+
+            print(f'Epoch {epoch + 1}, Test Loss: {test_loss / test_samples:.4f}')
 
         if current_loss > loss.item():
             current_loss = loss.item()
