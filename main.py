@@ -30,9 +30,12 @@ import re
 import os
 import io
 from copy import deepcopy
+import time
 
 
 def training(config: dict, base_dir: str, device: str):
+    start = time.time()
+
     # load models
     scheduler = DDPMScheduler.from_pretrained(
         config['model_name'],
@@ -81,9 +84,6 @@ def training(config: dict, base_dir: str, device: str):
         dropout_p=config['dropout'],
     )
 
-    # compile unet
-    # unet = torch.compile(unet, mode='reduce-overhead')
-
     # prepare data
     image_transforms = transforms.Compose(
         [
@@ -94,7 +94,7 @@ def training(config: dict, base_dir: str, device: str):
     )
 
     def tokenization(example):
-        text = f'A painting from the art style "{config["style"]}"'
+        text = f'A painting from the art style "{config["style"].replace('_', ' ')}"'
         return tokenizer(text, padding='max_length')
 
     def apply_transform(sample):
@@ -123,7 +123,7 @@ def training(config: dict, base_dir: str, device: str):
     # train data
     train_dataset = (
         wds.WebDataset(
-            f'./data/{config["dataset"]}/{config["style"]}_dataset.tar',  # TODO change path to train or test
+            f'./{config["dataset"]}/train_{config["style"]}.tar',
             shardshuffle=1024,
         )
         .decode('pil')
@@ -135,10 +135,10 @@ def training(config: dict, base_dir: str, device: str):
         train_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
     )
 
-    # test data
-    test_dataset = (
+    # val data
+    val_dataset = (
         wds.WebDataset(
-            f'./data/{config["dataset"]}/{config["style"]}_dataset.tar',  # TODO change path to train or test
+            f'./{config["dataset"]}/val_{config["style"]}.tar',
             shardshuffle=1024,
         )
         .decode('pil')
@@ -146,8 +146,8 @@ def training(config: dict, base_dir: str, device: str):
         .map(apply_transform)
         .to_tuple('image', 'input_ids', 'attention_mask')
     )
-    test_dataloader = DataLoader(
-        test_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
+    val_dataloader = DataLoader(
+        val_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
     )
 
     def read_total_samples_from_tar(tar_filename):
@@ -159,12 +159,12 @@ def training(config: dict, base_dir: str, device: str):
 
                     return total_metadata.get('total_samples', 0)
 
-    # get train and test length
+    # get train and val length
     train_samples = read_total_samples_from_tar(
-        f'./data/{config["dataset"]}/{config["style"]}_dataset.tar'
-    )  # TODO change path for train and test
-    test_samples = read_total_samples_from_tar(
-        f'./data/{config["dataset"]}/{config["style"]}_dataset.tar'
+        f'./{config["dataset"]}/train_{config["style"]}.tar'
+    )
+    val_samples = read_total_samples_from_tar(
+        f'./{config["dataset"]}/val_{config["style"]}.tar'
     )
 
     # prepare training parameters
@@ -270,13 +270,13 @@ def training(config: dict, base_dir: str, device: str):
         losses.append(epoch_loss)
         print(epoch_loss)
 
-        # test loop
-        if epoch % 1 == 0:
+        # val loop
+        if epoch % 5 == 0:
             unet.eval()
-            test_loss = 0.0
+            val_loss = 0.0
 
             with torch.no_grad():
-                for _, batch in enumerate(tqdm(test_dataloader)):
+                for _, batch in enumerate(tqdm(val_dataloader)):
                     # load data to device
                     image = batch['image'].to(device)
                     input_ids = batch['input_ids'].to(device)
@@ -324,9 +324,9 @@ def training(config: dict, base_dir: str, device: str):
 
                     # loss calculation
                     loss = loss_fn(output.float(), target.float())
-                    test_loss += loss.item()
+                    val_loss += loss.item()
 
-            print(f'Epoch {epoch + 1}, Test Loss: {test_loss / test_samples:.4f}')
+            print(f'Epoch {epoch + 1}, val Loss: {val_loss / val_samples:.4f}')
 
         if current_loss > loss.item():
             current_loss = loss.item()
@@ -349,6 +349,7 @@ def training(config: dict, base_dir: str, device: str):
     print('LoRA training finished')
     print(losses)
     save_lora_weight(best_model_state, f'{base_dir}/lora_weight.pt')
+    print(f'it took {time.time() - start} seconds')
 
 
 def inference(config: dict, base_dir: str, device: str):
