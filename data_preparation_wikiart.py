@@ -22,7 +22,7 @@ def split_wikiart():
 def create_tarfiles():
     # loop train, test val
     for subset in subsets:
-        subset_dir = os.path.join(dataset_path, subset)
+        subset_dir = os.path.join(split_path, subset)
         # loop art epochs
         for art_epoch in os.listdir(subset_dir):
             art_epoch_path = os.path.join(subset_dir, art_epoch)
@@ -89,6 +89,6 @@ def create_webdataset():
 
 
 # 1. split, 2. create tar, 3. create webdataset
-split_wikiart()
-# create_tarfiles()
+# split_wikiart()
+create_tarfiles()
 # create_webdataset()
