@@ -27,6 +27,9 @@ def create_tarfiles():
         for art_epoch in os.listdir(subset_dir):
             art_epoch_path = os.path.join(subset_dir, art_epoch)
             if os.path.isdir(art_epoch_path):
+                if not os.path.isdir(tar_path):
+                    os.mkdir(tar_path)
+
                 tar_name = f'{tar_path}/{subset.lower()}_{art_epoch.lower()}.tar'
 
                 with tempfile.TemporaryDirectory() as tmpdir:
