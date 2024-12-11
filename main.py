@@ -161,10 +161,10 @@ def training(config: dict, base_dir: str, device: str):
 
     # get train and val length
     train_samples = read_total_samples_from_tar(
-        f'./{config["dataset"]}/train_{config["style"]}.tar'
+        f'./data/{config["dataset"]}/train_{config["style"]}.tar'
     )
     val_samples = read_total_samples_from_tar(
-        f'./{config["dataset"]}/val_{config["style"]}.tar'
+        f'./data/{config["dataset"]}/val_{config["style"]}.tar'
     )
 
     # prepare training parameters
