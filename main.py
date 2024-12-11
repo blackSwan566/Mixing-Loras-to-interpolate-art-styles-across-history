@@ -94,7 +94,7 @@ def training(config: dict, base_dir: str, device: str):
     )
 
     def tokenization(example):
-        text = f'A painting from the art style "{config["style"].replace('_', ' ')}"'
+        text = f'A painting from the art style "{config["style"].replace("_", " ")}"'
         return tokenizer(text, padding='max_length')
 
     def apply_transform(sample):
@@ -193,6 +193,7 @@ def training(config: dict, base_dir: str, device: str):
 
     # losses
     losses = []
+    val_losses = []
 
     # gradient accumulation
     accumulation_steps = 32 // config['batch_size']
@@ -326,28 +327,31 @@ def training(config: dict, base_dir: str, device: str):
                     loss = loss_fn(output.float(), target.float())
                     val_loss += loss.item()
 
-            print(f'Epoch {epoch + 1}, val Loss: {val_loss / val_samples:.4f}')
+            total_val_loss = val_loss / val_samples
+            val_loss.append(total_val_loss)
+            print(f'Epoch {epoch + 1}, val Loss: {total_val_loss:.4f}')
 
-        if current_loss > loss.item():
-            current_loss = loss.item()
+            if current_loss > total_val_loss.item():
+                current_loss = total_val_loss.item()
 
-            # save best model state
-            unet.to('cpu')
-            best_model_state = deepcopy(unet)
-            unet.to(device)
+                # save best model state
+                unet.to('cpu')
+                best_model_state = deepcopy(unet)
+                unet.to(device)
 
-            best_epoch = epoch
-            patience = config['patience']
+                best_epoch = epoch
+                patience = config['patience']
 
-        else:
-            patience -= 1
+            else:
+                patience -= 1
 
-        if patience == 0:
-            break
+            if patience == 0:
+                break
 
     print(f'best epoch {best_epoch}')
     print('LoRA training finished')
-    print(losses)
+    print(f'train losses: {losses}')
+    print(f'val losses: {val_losses}')
     save_lora_weight(best_model_state, f'{base_dir}/lora_weight.pt')
     print(f'it took {time.time() - start} seconds')
 
