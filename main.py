@@ -328,7 +328,7 @@ def training(config: dict, base_dir: str, device: str):
                     val_loss += loss.item()
 
             total_val_loss = val_loss / val_samples
-            val_loss.append(total_val_loss)
+            val_losses.append(total_val_loss)
             print(f'Epoch {epoch + 1}, val Loss: {total_val_loss:.4f}')
 
             if current_loss > total_val_loss.item():
