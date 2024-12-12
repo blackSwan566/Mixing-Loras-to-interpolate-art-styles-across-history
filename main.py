@@ -123,7 +123,7 @@ def training(config: dict, base_dir: str, device: str):
     # train data
     train_dataset = (
         wds.WebDataset(
-            f'./{config["dataset"]}/train_{config["style"]}.tar',
+            f'./data/{config["dataset"]}_tar/train_{config["style"]}.tar',
             shardshuffle=1024,
         )
         .decode('pil')
@@ -138,7 +138,7 @@ def training(config: dict, base_dir: str, device: str):
     # val data
     val_dataset = (
         wds.WebDataset(
-            f'./{config["dataset"]}/val_{config["style"]}.tar',
+            f'./data/{config["dataset"]}_tar/val_{config["style"]}.tar',
             shardshuffle=1024,
         )
         .decode('pil')
