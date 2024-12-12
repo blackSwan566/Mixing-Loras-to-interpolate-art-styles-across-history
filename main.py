@@ -331,8 +331,8 @@ def training(config: dict, base_dir: str, device: str):
             val_losses.append(total_val_loss)
             print(f'Epoch {epoch + 1}, val Loss: {total_val_loss:.4f}')
 
-            if current_loss > total_val_loss.item():
-                current_loss = total_val_loss.item()
+            if current_loss > total_val_loss:
+                current_loss = total_val_loss
 
                 # save best model state
                 unet.to('cpu')
