@@ -7,7 +7,6 @@ from lora_diffusion import (
     save_lora_weight,
     patch_pipe,
     tune_lora_scale,
-    monkeypatch_add_lora
 )
 from diffusers import (
     UNet2DConditionModel,
@@ -17,17 +16,14 @@ from diffusers import (
 )
 from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 from torch.nn import MSELoss
-from bitsandbytes.optim import AdamW8bit
 from torch.optim import AdamW
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import webdataset as wds
-from huggingface_hub import get_token
 import json
 import argparse
 import pandas as pd
-from datasets import load_dataset
 import re
 import os
 import io
@@ -43,14 +39,14 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='scheduler',
         variant='fp16',
-        torch_dtype=torch.float32,
+        torch_dtype=torch.bfloat16,
     )
 
     unet = UNet2DConditionModel.from_pretrained(
         config['model_name'],
         subfolder='unet',
         variant='fp16',
-        torch_dtype=torch.float32,
+        torch_dtype=torch.bfloat16,
     ).to(device)
     unet.requires_grad_(False)
 
@@ -58,7 +54,7 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='text_encoder',
         variant='fp16',
-        torch_dtype=torch.float32,
+        torch_dtype=torch.bfloat16,
     ).to(device)
     text_encoder.requires_grad_(False)
     # text_encoder = torch.compile(text_encoder)
@@ -67,14 +63,14 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='tokenizer',
         variant='fp16',
-        torch_dtype=torch.float32,
+        torch_dtype=torch.bfloat16,
     )
 
     vae = AutoencoderKL.from_pretrained(
         config['model_name'],
         subfolder='vae',
         variant='fp16',
-        torch_dtype=torch.float32,
+        torch_dtype=torch.bfloat16,
     ).to(device)
     vae.requires_grad_(False)
     # vae = torch.compile(vae)
@@ -84,6 +80,13 @@ def training(config: dict, base_dir: str, device: str):
         model=unet,
         r=config['r'],
     )
+
+    # transform weights from bfloat16 to float32
+    for name, param in unet.named_parameters():
+        if 'lora' in name:
+            param.data = param.data.to(torch.float32)
+            param.requires_grad = True
+
 
     # prepare data
     image_transforms = transforms.Compose(
@@ -95,7 +98,8 @@ def training(config: dict, base_dir: str, device: str):
     )
 
     def tokenization(example):
-        text = f'a painting in the art style of "{config["style"].replace("_", " ")}"'
+        #text = f'a painting in the art style of "{config["style"].replace("_", " ")}"'
+        text = f'A painting in the style of {config["prompt"]}'
         return tokenizer(text, padding='max_length')
 
     def apply_transform(sample):
@@ -171,18 +175,12 @@ def training(config: dict, base_dir: str, device: str):
         f'./data/{config["dataset"]}_tar/val_{config["style"]}.tar'
     )
 
-    # prepare training parameters
-    # optimizer = AdamW8bit(
-    #     list(itertools.chain(*unet_lora_params)),
-    #     lr=config['lr'],
-    #     weight_decay=config['weight_decay'],
-    # )
     optimizer = AdamW(
         list(itertools.chain(*unet_lora_params)),
         lr=config['lr'],
         weight_decay=config['weight_decay'],
     )
-
+ 
     # loss function
     loss_fn = MSELoss()
 
@@ -215,6 +213,9 @@ def training(config: dict, base_dir: str, device: str):
     best_epoch = 0
     patience = config['patience']
 
+    # scaler
+    scaler = torch.amp.GradScaler()
+
     for epoch in range(epochs):
         unet.train()
         running_loss = 0.0
@@ -228,9 +229,9 @@ def training(config: dict, base_dir: str, device: str):
             image = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-
+       
             # create noise latents
-            latents = vae.encode(image.to(dtype=torch.float32)).latent_dist.sample()
+            latents = vae.encode(image.to(dtype=torch.bfloat16)).latent_dist.sample()
             latents = latents * 0.18215
 
             timesteps = torch.randint(
@@ -249,30 +250,35 @@ def training(config: dict, base_dir: str, device: str):
             encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
 
             # forward pass
-            output = unet(
-                sample=noise_latents,
-                timestep=timesteps,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=attention_mask,
-            ).sample
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                output = unet(
+                    sample=noise_latents,
+                    timestep=timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=attention_mask,
+                ).sample
 
-            # get target value
-            if scheduler.config.prediction_type == 'epsilon':
-                target = noise
-            elif scheduler.config.prediction_type == 'v_prediction':
-                target = scheduler.get_velocity(latents, noise, timesteps)
-            else:
-                raise ValueError(
-                    f'Unknown prediction type {scheduler.config.prediction_type}'
-                )
+                # get target value
+                if scheduler.config.prediction_type == 'epsilon':
+                    target = noise
+                elif scheduler.config.prediction_type == 'v_prediction':
+                    target = scheduler.get_velocity(latents, noise, timesteps)
+                else:
+                    raise ValueError(
+                        f'Unknown prediction type {scheduler.config.prediction_type}'
+                    )
 
-            # loss calculation
-            loss = loss_fn(output.float(), target.float())
-            #loss = loss / accumulation_steps
-            running_loss += loss.item()
+                # loss calculation
+                loss = loss_fn(output.float(), target.float())
+                #loss = loss / accumulation_steps
+                running_loss += loss.item()
 
-            loss.backward()
-            optimizer.step()
+            # loss.backward()
+            # optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
 
             # # gradient accumulation
             # if (step + 1) % accumulation_steps == 0 or (step + 1) == train_samples:
@@ -320,7 +326,7 @@ def training(config: dict, base_dir: str, device: str):
 
                 # create noise latents
                 latents = vae.encode(
-                    image.to(dtype=torch.float32)
+                    image.to(dtype=torch.bfloat16)
                 ).latent_dist.sample()
                 latents = latents * 0.18215
 
@@ -341,26 +347,27 @@ def training(config: dict, base_dir: str, device: str):
                 ]
 
                 # forward pass
-                output = unet(
-                    sample=noise_latents,
-                    timestep=timesteps,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_attention_mask=attention_mask,
-                ).sample
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    output = unet(
+                        sample=noise_latents,
+                        timestep=timesteps,
+                        encoder_hidden_states=encoder_hidden_states,
+                        encoder_attention_mask=attention_mask,
+                    ).sample
 
-                # get target value
-                if scheduler.config.prediction_type == 'epsilon':
-                    target = noise
-                elif scheduler.config.prediction_type == 'v_prediction':
-                    target = scheduler.get_velocity(latents, noise, timesteps)
-                else:
-                    raise ValueError(
-                        f'Unknown prediction type {scheduler.config.prediction_type}'
-                    )
+                    # get target value
+                    if scheduler.config.prediction_type == 'epsilon':
+                        target = noise
+                    elif scheduler.config.prediction_type == 'v_prediction':
+                        target = scheduler.get_velocity(latents, noise, timesteps)
+                    else:
+                        raise ValueError(
+                            f'Unknown prediction type {scheduler.config.prediction_type}'
+                        )
 
-                # loss calculation
-                loss = loss_fn(output.float(), target.float())
-                val_loss += loss.item()
+                    # loss calculation
+                    loss = loss_fn(output.float(), target.float())
+                    val_loss += loss.item()
 
         total_val_loss = val_loss / val_samples
         val_losses.append(total_val_loss)
