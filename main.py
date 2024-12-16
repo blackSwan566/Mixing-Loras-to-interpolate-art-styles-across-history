@@ -33,8 +33,7 @@ import os
 import io
 from copy import deepcopy
 import time
-import logging
-logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
+import matplotlib.pyplot as plt
 
 def training(config: dict, base_dir: str, device: str):
     start = time.time()
@@ -86,17 +85,6 @@ def training(config: dict, base_dir: str, device: str):
         r=config['r'],
     )
 
-    # Verify the LoRA injection
-    trainable_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
-    print(f"Number of trainable parameters in unet: {trainable_params}")
-
-    trainable_param_names = [name for name, param in unet.named_parameters() if param.requires_grad]
-    
-    print("First 5 Trainable parameter names:")
-    for i in range(min(5,len(trainable_param_names))):
-        print(f'{i+1} {trainable_param_names[i]}')
-
-
     # prepare data
     image_transforms = transforms.Compose(
         [
@@ -115,7 +103,6 @@ def training(config: dict, base_dir: str, device: str):
             return None
 
         sample['image'] = image_transforms(sample['jpg'])
-        logging.debug(f'shape of transformed image: {sample["image"].shape}')
 
         tokenized = tokenization(sample)
         sample['input_ids'] = tokenized['input_ids']
@@ -206,9 +193,6 @@ def training(config: dict, base_dir: str, device: str):
     num_training_steps = train_samples * epochs
     warmup_steps = int(num_training_steps * 0.1)
 
-    print(f'num_trainer_steps: {num_training_steps}')
-    print(f'warmup_steps: {warmup_steps}')
-
     # lr_scheduler = get_scheduler(
     #     name='linear',
     #     optimizer=optimizer,
@@ -234,11 +218,12 @@ def training(config: dict, base_dir: str, device: str):
     for epoch in range(epochs):
         unet.train()
         running_loss = 0.0
-        optimizer.zero_grad(set_to_none=True)
 
         for step, batch in enumerate(
             tqdm(train_dataloader, desc=f'Epoch:[{epoch + 1}|{epochs}]')
         ):
+            optimizer.zero_grad(set_to_none=True)
+
             # load data to device
             image = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
@@ -263,11 +248,6 @@ def training(config: dict, base_dir: str, device: str):
             # encode input
             encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
 
-            print(f'latents before noise {torch.mean(latents)}')
-            print(f'noise before noise {torch.mean(noise)}')
-            print(f'noise_latents before noise {torch.mean(noise_latents)}')
-            print(f'encoder_hidden_states before noise {torch.mean(encoder_hidden_states)}')
-
             # forward pass
             output = unet(
                 sample=noise_latents,
@@ -289,62 +269,10 @@ def training(config: dict, base_dir: str, device: str):
             # loss calculation
             loss = loss_fn(output.float(), target.float())
             #loss = loss / accumulation_steps
-
-            print("Loss", loss)
-            print(f'output after loss {torch.mean(output)}')
-            print(f'target after loss {torch.mean(target)}')
-
             running_loss += loss.item()
 
-            for name, param in unet.named_parameters():
-                if param.grad is not None:
-                        if torch.isnan(param.grad).any():
-                            print(f"NaN gradient found in {name}")
-                        if torch.isinf(param.grad).any():
-                            print(f"Inf gradient found in {name}")
-                        if torch.all(param.grad == 0):
-                            print(f'Zero gradient found in {name}')
-                        else:
-                            print(f"Gradient mean value in {name}: {torch.mean(param.grad)}")
-
-            optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            
-
-            param_updates = []
-            for group in optimizer.param_groups:
-                for param in group['params']:
-                    if param.grad is not None:
-                        param_updates.append(param.grad.abs().mean().item())
-
-            if len(param_updates) > 0:
-                avg_param_update = sum(param_updates) / len(param_updates)
-                print(f'Average parameter update magnitude: {avg_param_update}')
-
-            param_before = []
-            for param in unet.parameters():
-                if param.requires_grad:
-                    param_before.append(param.clone().detach().cpu())
-
-            param_updates = []
-            for group in optimizer.param_groups:
-                for param in group['params']:
-                    if param.grad is not None:
-                        param_updates.append(param.grad.abs().mean().item())
-
             optimizer.step()
-           
-            param_after = []
-            for param in unet.parameters():
-                if param.requires_grad:
-                    param_after.append(param.clone().detach().cpu())
-
-            param_diffs = []
-            for before, after in zip(param_before, param_after):
-                param_diff = torch.abs(before - after)
-                param_diffs.append(torch.mean(param_diff).item())
-            if len(param_diffs) > 0:
-                print(f'Parameter difference : {sum(param_diffs) / len(param_diffs)}')
 
             # # gradient accumulation
             # if (step + 1) % accumulation_steps == 0 or (step + 1) == train_samples:
@@ -376,7 +304,8 @@ def training(config: dict, base_dir: str, device: str):
 
         epoch_loss = running_loss / train_samples
         losses.append(epoch_loss)
-        
+        print("Loss", epoch_loss)
+
 
         # val loop
         unet.eval()
@@ -459,6 +388,17 @@ def training(config: dict, base_dir: str, device: str):
     print(f'train losses: {losses}')
     print(f'val losses: {val_losses}')
     save_lora_weight(best_model_state, f'{base_dir}/{config["style"]}_lora_weight.pt')
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses, label='Training Loss')
+    plt.plot(val_losses, label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss')
+    plt.legend()
+    plt.grid()
+    plt.savefig(f'{base_dir}/losses.png')
+
     print(f'it took {time.time() - start} seconds')
 
 
