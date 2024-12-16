@@ -7,6 +7,7 @@ from lora_diffusion import (
     save_lora_weight,
     patch_pipe,
     tune_lora_scale,
+    monkeypatch_add_lora
 )
 from diffusers import (
     UNet2DConditionModel,
@@ -17,6 +18,7 @@ from diffusers import (
 from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 from torch.nn import MSELoss
 from bitsandbytes.optim import AdamW8bit
+from torch.optim import AdamW
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -31,7 +33,8 @@ import os
 import io
 from copy import deepcopy
 import time
-
+import logging
+logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
 
 def training(config: dict, base_dir: str, device: str):
     start = time.time()
@@ -41,14 +44,14 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='scheduler',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,
     )
 
     unet = UNet2DConditionModel.from_pretrained(
         config['model_name'],
         subfolder='unet',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,
     ).to(device)
     unet.requires_grad_(False)
 
@@ -56,33 +59,43 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='text_encoder',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,
     ).to(device)
     text_encoder.requires_grad_(False)
-    text_encoder = torch.compile(text_encoder)
+    # text_encoder = torch.compile(text_encoder)
 
     tokenizer = CLIPTokenizer.from_pretrained(
         config['model_name'],
         subfolder='tokenizer',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,
     )
 
     vae = AutoencoderKL.from_pretrained(
         config['model_name'],
         subfolder='vae',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,
     ).to(device)
     vae.requires_grad_(False)
-    vae = torch.compile(vae)
+    # vae = torch.compile(vae)
 
     # inject LoRA
     unet_lora_params, _ = inject_trainable_lora(
         model=unet,
         r=config['r'],
-        dropout_p=config['dropout'],
     )
+
+    # Verify the LoRA injection
+    trainable_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
+    print(f"Number of trainable parameters in unet: {trainable_params}")
+
+    trainable_param_names = [name for name, param in unet.named_parameters() if param.requires_grad]
+    
+    print("First 5 Trainable parameter names:")
+    for i in range(min(5,len(trainable_param_names))):
+        print(f'{i+1} {trainable_param_names[i]}')
+
 
     # prepare data
     image_transforms = transforms.Compose(
@@ -94,7 +107,7 @@ def training(config: dict, base_dir: str, device: str):
     )
 
     def tokenization(example):
-        text = f'A painting from the art style "{config["style"].replace("_", " ")}"'
+        text = f'a painting in the art style of "{config["style"].replace("_", " ")}"'
         return tokenizer(text, padding='max_length')
 
     def apply_transform(sample):
@@ -102,6 +115,7 @@ def training(config: dict, base_dir: str, device: str):
             return None
 
         sample['image'] = image_transforms(sample['jpg'])
+        logging.debug(f'shape of transformed image: {sample["image"].shape}')
 
         tokenized = tokenization(sample)
         sample['input_ids'] = tokenized['input_ids']
@@ -131,6 +145,9 @@ def training(config: dict, base_dir: str, device: str):
         .map(apply_transform)
         .to_tuple('image', 'input_ids', 'attention_mask')
     )
+
+    #train_dataset_limited = itertools.islice(train_dataset, 1)
+      
     train_dataloader = DataLoader(
         train_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
     )
@@ -168,7 +185,12 @@ def training(config: dict, base_dir: str, device: str):
     )
 
     # prepare training parameters
-    optimizer = AdamW8bit(
+    # optimizer = AdamW8bit(
+    #     list(itertools.chain(*unet_lora_params)),
+    #     lr=config['lr'],
+    #     weight_decay=config['weight_decay'],
+    # )
+    optimizer = AdamW(
         list(itertools.chain(*unet_lora_params)),
         lr=config['lr'],
         weight_decay=config['weight_decay'],
@@ -184,12 +206,17 @@ def training(config: dict, base_dir: str, device: str):
     num_training_steps = train_samples * epochs
     warmup_steps = int(num_training_steps * 0.1)
 
-    lr_scheduler = get_scheduler(
-        name='linear',
-        optimizer=optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=num_training_steps,
-    )
+    print(f'num_trainer_steps: {num_training_steps}')
+    print(f'warmup_steps: {warmup_steps}')
+
+    # lr_scheduler = get_scheduler(
+    #     name='linear',
+    #     optimizer=optimizer,
+    #     num_warmup_steps=warmup_steps,
+    #     num_training_steps=num_training_steps,
+    # )
+
+    # lr_scheduler.step()
 
     # losses
     losses = []
@@ -218,7 +245,7 @@ def training(config: dict, base_dir: str, device: str):
             attention_mask = batch['attention_mask'].to(device)
 
             # create noise latents
-            latents = vae.encode(image.to(dtype=torch.float16)).latent_dist.sample()
+            latents = vae.encode(image.to(dtype=torch.float32)).latent_dist.sample()
             latents = latents * 0.18215
 
             timesteps = torch.randint(
@@ -235,6 +262,11 @@ def training(config: dict, base_dir: str, device: str):
 
             # encode input
             encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
+
+            print(f'latents before noise {torch.mean(latents)}')
+            print(f'noise before noise {torch.mean(noise)}')
+            print(f'noise_latents before noise {torch.mean(noise_latents)}')
+            print(f'encoder_hidden_states before noise {torch.mean(encoder_hidden_states)}')
 
             # forward pass
             output = unet(
@@ -256,103 +288,177 @@ def training(config: dict, base_dir: str, device: str):
 
             # loss calculation
             loss = loss_fn(output.float(), target.float())
-            loss = loss / accumulation_steps
-            running_loss += loss.item()
-            loss.backward()
+            #loss = loss / accumulation_steps
 
-            # gradient accumulation
-            if (step + 1) % accumulation_steps == 0 or (step + 1) == train_samples:
-                torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
+            print("Loss", loss)
+            print(f'output after loss {torch.mean(output)}')
+            print(f'target after loss {torch.mean(target)}')
+
+            running_loss += loss.item()
+
+            for name, param in unet.named_parameters():
+                if param.grad is not None:
+                        if torch.isnan(param.grad).any():
+                            print(f"NaN gradient found in {name}")
+                        if torch.isinf(param.grad).any():
+                            print(f"Inf gradient found in {name}")
+                        if torch.all(param.grad == 0):
+                            print(f'Zero gradient found in {name}')
+                        else:
+                            print(f"Gradient mean value in {name}: {torch.mean(param.grad)}")
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            
+
+            param_updates = []
+            for group in optimizer.param_groups:
+                for param in group['params']:
+                    if param.grad is not None:
+                        param_updates.append(param.grad.abs().mean().item())
+
+            if len(param_updates) > 0:
+                avg_param_update = sum(param_updates) / len(param_updates)
+                print(f'Average parameter update magnitude: {avg_param_update}')
+
+            param_before = []
+            for param in unet.parameters():
+                if param.requires_grad:
+                    param_before.append(param.clone().detach().cpu())
+
+            param_updates = []
+            for group in optimizer.param_groups:
+                for param in group['params']:
+                    if param.grad is not None:
+                        param_updates.append(param.grad.abs().mean().item())
+
+            optimizer.step()
+           
+            param_after = []
+            for param in unet.parameters():
+                if param.requires_grad:
+                    param_after.append(param.clone().detach().cpu())
+
+            param_diffs = []
+            for before, after in zip(param_before, param_after):
+                param_diff = torch.abs(before - after)
+                param_diffs.append(torch.mean(param_diff).item())
+            if len(param_diffs) > 0:
+                print(f'Parameter difference : {sum(param_diffs) / len(param_diffs)}')
+
+            # # gradient accumulation
+            # if (step + 1) % accumulation_steps == 0 or (step + 1) == train_samples:
+            #     print("Checking optimizer step")
+            #     param_before = next(iter(unet.parameters())).clone().detach().cpu() # Get the first layer of the model before the step
+
+            #     torch_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
+            #     print(f'total graidnet norm: {torch_norm}')
+
+            #     param_updates = []
+            #     for group in optimizer.param_groups:
+            #         for param in group['params']:
+            #             if param.grad is not None:
+            #                 param_updates.append(param.grad.abs().mean().item())
+
+            #     if len(param_updates) > 0:
+            #         avg_param_update = sum(param_updates) / len(param_updates)
+            #         print(f'Average parameter update magnitude: {avg_param_update}')
+
+            #     print(f'Learning rate {lr_scheduler.get_last_lr()}')
+            #     optimizer.step()
+            #     lr_scheduler.step()
+            #     optimizer.zero_grad(set_to_none=True)
+
+            #     param_after = next(iter(unet.parameters())).clone().detach().cpu() # Get the first layer of the model after the step
+            #     param_diff = torch.abs(param_before - param_after) # Check the absolute difference
+                
+            #     print(f'Parameter difference : {torch.mean(param_diff)}')
 
         epoch_loss = running_loss / train_samples
         losses.append(epoch_loss)
-        print(epoch_loss)
+        
 
         # val loop
-        if epoch % 5 == 0:
-            unet.eval()
-            val_loss = 0.0
+        unet.eval()
+        val_loss = 0.0
 
-            with torch.no_grad():
-                for _, batch in enumerate(tqdm(val_dataloader)):
-                    # load data to device
-                    image = batch['image'].to(device)
-                    input_ids = batch['input_ids'].to(device)
-                    attention_mask = batch['attention_mask'].to(device)
+        with torch.no_grad():
+            for _, batch in enumerate(tqdm(val_dataloader)):
+                # load data to device
+                image = batch['image'].to(device)
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
 
-                    # create noise latents
-                    latents = vae.encode(
-                        image.to(dtype=torch.float16)
-                    ).latent_dist.sample()
-                    latents = latents * 0.18215
+                # create noise latents
+                latents = vae.encode(
+                    image.to(dtype=torch.float32)
+                ).latent_dist.sample()
+                latents = latents * 0.18215
 
-                    timesteps = torch.randint(
-                        0,
-                        scheduler.config.num_train_timesteps,
-                        (latents.shape[0],),
-                        device=device,
+                timesteps = torch.randint(
+                    0,
+                    scheduler.config.num_train_timesteps,
+                    (latents.shape[0],),
+                    device=device,
+                )
+                timesteps = timesteps.long()
+
+                noise = torch.randn_like(latents)
+                noise_latents = scheduler.add_noise(latents, noise, timesteps)
+
+                # encode input
+                encoder_hidden_states = text_encoder(input_ids, return_dict=False)[
+                    0
+                ]
+
+                # forward pass
+                output = unet(
+                    sample=noise_latents,
+                    timestep=timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=attention_mask,
+                ).sample
+
+                # get target value
+                if scheduler.config.prediction_type == 'epsilon':
+                    target = noise
+                elif scheduler.config.prediction_type == 'v_prediction':
+                    target = scheduler.get_velocity(latents, noise, timesteps)
+                else:
+                    raise ValueError(
+                        f'Unknown prediction type {scheduler.config.prediction_type}'
                     )
-                    timesteps = timesteps.long()
 
-                    noise = torch.randn_like(latents)
-                    noise_latents = scheduler.add_noise(latents, noise, timesteps)
+                # loss calculation
+                loss = loss_fn(output.float(), target.float())
+                val_loss += loss.item()
 
-                    # encode input
-                    encoder_hidden_states = text_encoder(input_ids, return_dict=False)[
-                        0
-                    ]
+        total_val_loss = val_loss / val_samples
+        val_losses.append(total_val_loss)
+        print(f'Epoch {epoch + 1}, val Loss: {total_val_loss:.4f}')
 
-                    # forward pass
-                    output = unet(
-                        sample=noise_latents,
-                        timestep=timesteps,
-                        encoder_hidden_states=encoder_hidden_states,
-                        encoder_attention_mask=attention_mask,
-                    ).sample
+        if current_loss > total_val_loss:
+            current_loss = total_val_loss
 
-                    # get target value
-                    if scheduler.config.prediction_type == 'epsilon':
-                        target = noise
-                    elif scheduler.config.prediction_type == 'v_prediction':
-                        target = scheduler.get_velocity(latents, noise, timesteps)
-                    else:
-                        raise ValueError(
-                            f'Unknown prediction type {scheduler.config.prediction_type}'
-                        )
+            # save best model state
+            unet.to('cpu')
+            best_model_state = deepcopy(unet)
+            unet.to(device)
 
-                    # loss calculation
-                    loss = loss_fn(output.float(), target.float())
-                    val_loss += loss.item()
+            best_epoch = epoch
+            patience = config['patience']
 
-            total_val_loss = val_loss / val_samples
-            val_losses.append(total_val_loss)
-            print(f'Epoch {epoch + 1}, val Loss: {total_val_loss:.4f}')
+        else:
+            patience -= 1
 
-            if current_loss > total_val_loss:
-                current_loss = total_val_loss
-
-                # save best model state
-                unet.to('cpu')
-                best_model_state = deepcopy(unet)
-                unet.to(device)
-
-                best_epoch = epoch
-                patience = config['patience']
-
-            else:
-                patience -= 1
-
-            if patience == 0:
-                break
+        if patience == 0:
+            break
 
     print(f'best epoch {best_epoch}')
     print('LoRA training finished')
     print(f'train losses: {losses}')
     print(f'val losses: {val_losses}')
-    save_lora_weight(best_model_state, f'{base_dir}/lora_weight.pt')
+    save_lora_weight(best_model_state, f'{base_dir}/{config["style"]}_lora_weight.pt')
     print(f'it took {time.time() - start} seconds')
 
 
@@ -362,7 +468,7 @@ def inference(config: dict, base_dir: str, device: str):
     # load diffusion model
     pipe = StableDiffusionPipeline.from_pretrained(
         config['model_name'],
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,
     ).to(device)
     pipe.safety_checker = None
 
@@ -382,6 +488,7 @@ def inference(config: dict, base_dir: str, device: str):
     patch_pipe(
         pipe,
         config['data_path'],
+        r=config['r'],
         patch_unet=True,
         patch_text=False,
         patch_ti=False,
@@ -395,6 +502,15 @@ def inference(config: dict, base_dir: str, device: str):
         guidance_scale=config['guidance_scale'],
     ).images[0]
     image.save(f'{base_dir}/lora.png')
+    # monkeypatch_add_lora(pipe.unet, torch.load(config['data_path']))
+    # tune_lora_scale(pipe.unet, 1.00)
+    # image = pipe(
+    #     config['prompt'],
+    #     num_inference_steps=config['num_inference_steps'],
+    #     guidance_scale=config['guidance_scale'],
+    # ).images[0]
+    # image.save(f'{base_dir}/lora.png')
+
 
 
 def data_preparation(config: dict, base_dir: str):
