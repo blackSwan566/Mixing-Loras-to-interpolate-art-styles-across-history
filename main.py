@@ -481,6 +481,103 @@ def data_preparation(config: dict, base_dir: str):
         print(f'total length: {total_samples}')
         print(f'Tar archive created: {tar_archive}')
 
+def precompute(config: dict, base_dir: str, device: str):
+    # load models
+    text_encoder = CLIPTextModel.from_pretrained(
+        config['model_name'],
+        subfolder='text_encoder',
+        variant='fp16',
+        torch_dtype=torch.bfloat16,
+    ).to(device)
+    text_encoder.requires_grad_(False)
+
+    tokenizer = CLIPTokenizer.from_pretrained(
+        config['model_name'],
+        subfolder='tokenizer',
+        variant='fp16',
+        torch_dtype=torch.bfloat16,
+    )
+
+    vae = AutoencoderKL.from_pretrained(
+        config['model_name'],
+        subfolder='vae',
+        variant='fp16',
+        torch_dtype=torch.bfloat16,
+    ).to(device)
+    vae.requires_grad_(False)
+
+    # create prompt
+    prompt = f'A painting in the style of {config["prompt"]}'
+    tokenized = tokenizer(prompt, padding='max_length', return_tensors='pt')
+
+    # create encoder_hidden_states and attention_mask for unet model
+    input_ids = tokenized['input_ids'].to(device)
+    attention_mask = tokenized['attention_mask'].to(device)
+
+    with torch.no_grad():
+        encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
+
+
+    # transformation
+    image_transforms = transforms.Compose(
+        [
+            transforms.Resize((512, 512)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+        ]
+    )
+
+     # data paths
+    if not os.path.isdir(f'./data/{config["dataset"]}_precompute'):
+        os.mkdir(f'./data/{config["dataset"]}_precompute')
+
+
+
+    input_tar_path = f'./data/{config["dataset"]}_tar/{config["split"]}_{config["style"]}.tar'
+    output_tar_path = f'./data/{config["dataset"]}_precompute/{config["split"]}_{config["style"]}_latents.pt'
+
+    # get length
+    def read_total_samples_from_tar(tar_filename):
+        with tarfile.open(tar_filename, 'r') as tar:
+            for member in tar.getmembers():
+                if member.name == 'total_metadata.json':
+                    f = tar.extractfile(member)
+                    total_metadata = json.load(f)
+
+                    return total_metadata.get('total_samples', 0)
+                
+    total_samples = read_total_samples_from_tar(input_tar_path)
+
+    all_precomputed_data = []
+    dataset = wds.WebDataset(
+        input_tar_path
+    ).decode('pil')
+
+    for i, sample in enumerate(tqdm(dataset, desc="Precomputing data")):
+        if 'jpg' not in sample:
+            continue
+
+        image_key = sample['__key__']
+        image = sample['jpg']
+        
+        # transform image
+        image_tensor = image_transforms(image).unsqueeze(0).to(device, dtype=torch.bfloat16)
+
+        # forward pass of vae
+        with torch.no_grad():
+            latents = vae.encode(image_tensor).latent_dist.mean * 0.18215
+
+        # Save noise latents, encoder_hidden_states, and attention_mask
+        precomputed_data = {
+            'latents': latents.cpu(),
+            'encoder_hidden_states': encoder_hidden_states.cpu(),
+            'attention_mask': attention_mask.cpu(),
+        }
+
+        all_precomputed_data.append(precomputed_data)
+
+    torch.save(all_precomputed_data, output_tar_path)
+
 
 def main(args):
     config, base_dir = load_config(task=args.task)
@@ -494,6 +591,9 @@ def main(args):
 
     elif args.task == 'data_preparation':
         data_preparation(config, base_dir)
+
+    elif args.task == 'precompute':
+        precompute(config, base_dir, device)
 
 
 if __name__ == '__main__':
@@ -513,6 +613,10 @@ if __name__ == '__main__':
 
     data_preparation_parser = subparsers.add_parser(
         'data_preparation', help='prepares the data'
+    )
+
+    precomputed_parser = subparsers.add_parser(
+        'precompute', help='precomputed the data'
     )
 
     args = parser.parse_args()
