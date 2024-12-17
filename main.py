@@ -16,22 +16,20 @@ from diffusers import (
 )
 from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 from torch.nn import MSELoss
-from bitsandbytes.optim import AdamW8bit
+from torch.optim import AdamW
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import webdataset as wds
-from huggingface_hub import get_token
 import json
 import argparse
 import pandas as pd
-from datasets import load_dataset
 import re
 import os
 import io
 from copy import deepcopy
 import time
-
+import matplotlib.pyplot as plt
 
 def training(config: dict, base_dir: str, device: str):
     start = time.time()
@@ -41,14 +39,14 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='scheduler',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
     )
 
     unet = UNet2DConditionModel.from_pretrained(
         config['model_name'],
         subfolder='unet',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
     ).to(device)
     unet.requires_grad_(False)
 
@@ -56,33 +54,37 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='text_encoder',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
     ).to(device)
     text_encoder.requires_grad_(False)
-    text_encoder = torch.compile(text_encoder)
 
     tokenizer = CLIPTokenizer.from_pretrained(
         config['model_name'],
         subfolder='tokenizer',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
     )
 
     vae = AutoencoderKL.from_pretrained(
         config['model_name'],
         subfolder='vae',
         variant='fp16',
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
     ).to(device)
     vae.requires_grad_(False)
-    vae = torch.compile(vae)
 
     # inject LoRA
     unet_lora_params, _ = inject_trainable_lora(
         model=unet,
         r=config['r'],
-        dropout_p=config['dropout'],
     )
+
+    # transform weights from bfloat16 to float32
+    for name, param in unet.named_parameters():
+        if 'lora' in name:
+            param.data = param.data.to(torch.float32)
+            param.requires_grad = True
+
 
     # prepare data
     image_transforms = transforms.Compose(
@@ -94,7 +96,8 @@ def training(config: dict, base_dir: str, device: str):
     )
 
     def tokenization(example):
-        text = f'A painting from the art style "{config["style"].replace("_", " ")}"'
+        #text = f'a painting in the art style of "{config["style"].replace("_", " ")}"'
+        text = f'A painting in the style of {config["prompt"]}'
         return tokenizer(text, padding='max_length')
 
     def apply_transform(sample):
@@ -131,6 +134,7 @@ def training(config: dict, base_dir: str, device: str):
         .map(apply_transform)
         .to_tuple('image', 'input_ids', 'attention_mask')
     )
+      
     train_dataloader = DataLoader(
         train_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
     )
@@ -167,36 +171,22 @@ def training(config: dict, base_dir: str, device: str):
         f'./data/{config["dataset"]}_tar/val_{config["style"]}.tar'
     )
 
-    # prepare training parameters
-    optimizer = AdamW8bit(
+    # optimizer
+    optimizer = AdamW(
         list(itertools.chain(*unet_lora_params)),
         lr=config['lr'],
         weight_decay=config['weight_decay'],
     )
-
+ 
     # loss function
     loss_fn = MSELoss()
 
     # epochs
     epochs = config['epochs']
 
-    # learning rate scheduler
-    num_training_steps = train_samples * epochs
-    warmup_steps = int(num_training_steps * 0.1)
-
-    lr_scheduler = get_scheduler(
-        name='linear',
-        optimizer=optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=num_training_steps,
-    )
-
-    # losses
+    # collect losses
     losses = []
     val_losses = []
-
-    # gradient accumulation
-    accumulation_steps = 32 // config['batch_size']
 
     # Model saving & patience
     current_loss = 1000
@@ -204,21 +194,25 @@ def training(config: dict, base_dir: str, device: str):
     best_epoch = 0
     patience = config['patience']
 
+    # scaler
+    scaler = torch.amp.GradScaler()
+
     for epoch in range(epochs):
         unet.train()
         running_loss = 0.0
-        optimizer.zero_grad(set_to_none=True)
 
         for step, batch in enumerate(
             tqdm(train_dataloader, desc=f'Epoch:[{epoch + 1}|{epochs}]')
         ):
+            optimizer.zero_grad(set_to_none=True)
+
             # load data to device
             image = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-
+       
             # create noise latents
-            latents = vae.encode(image.to(dtype=torch.float16)).latent_dist.sample()
+            latents = vae.encode(image.to(dtype=torch.bfloat16)).latent_dist.sample()
             latents = latents * 0.18215
 
             timesteps = torch.randint(
@@ -237,75 +231,72 @@ def training(config: dict, base_dir: str, device: str):
             encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
 
             # forward pass
-            output = unet(
-                sample=noise_latents,
-                timestep=timesteps,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=attention_mask,
-            ).sample
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                output = unet(
+                    sample=noise_latents,
+                    timestep=timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=attention_mask,
+                ).sample
 
-            # get target value
-            if scheduler.config.prediction_type == 'epsilon':
-                target = noise
-            elif scheduler.config.prediction_type == 'v_prediction':
-                target = scheduler.get_velocity(latents, noise, timesteps)
-            else:
-                raise ValueError(
-                    f'Unknown prediction type {scheduler.config.prediction_type}'
-                )
+                # get target value
+                if scheduler.config.prediction_type == 'epsilon':
+                    target = noise
+                elif scheduler.config.prediction_type == 'v_prediction':
+                    target = scheduler.get_velocity(latents, noise, timesteps)
+                else:
+                    raise ValueError(
+                        f'Unknown prediction type {scheduler.config.prediction_type}'
+                    )
 
-            # loss calculation
-            loss = loss_fn(output.float(), target.float())
-            loss = loss / accumulation_steps
-            running_loss += loss.item()
-            loss.backward()
+                # loss calculation
+                loss = loss_fn(output.float(), target.float())
+                running_loss += loss.item()
 
-            # gradient accumulation
-            if (step + 1) % accumulation_steps == 0 or (step + 1) == train_samples:
-                torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
         epoch_loss = running_loss / train_samples
         losses.append(epoch_loss)
-        print(epoch_loss)
+        print(f"Epoch {epoch + 1}, train loss: {epoch_loss:.4f}")
+
 
         # val loop
-        if epoch % 5 == 0:
-            unet.eval()
-            val_loss = 0.0
+        unet.eval()
+        val_loss = 0.0
 
-            with torch.no_grad():
-                for _, batch in enumerate(tqdm(val_dataloader)):
-                    # load data to device
-                    image = batch['image'].to(device)
-                    input_ids = batch['input_ids'].to(device)
-                    attention_mask = batch['attention_mask'].to(device)
+        with torch.no_grad():
+            for _, batch in enumerate(tqdm(val_dataloader)):
+                # load data to device
+                image = batch['image'].to(device)
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
 
-                    # create noise latents
-                    latents = vae.encode(
-                        image.to(dtype=torch.float16)
-                    ).latent_dist.sample()
-                    latents = latents * 0.18215
+                # create noise latents
+                latents = vae.encode(
+                    image.to(dtype=torch.bfloat16)
+                ).latent_dist.sample()
+                latents = latents * 0.18215
 
-                    timesteps = torch.randint(
-                        0,
-                        scheduler.config.num_train_timesteps,
-                        (latents.shape[0],),
-                        device=device,
-                    )
-                    timesteps = timesteps.long()
+                timesteps = torch.randint(
+                    0,
+                    scheduler.config.num_train_timesteps,
+                    (latents.shape[0],),
+                    device=device,
+                )
+                timesteps = timesteps.long()
 
-                    noise = torch.randn_like(latents)
-                    noise_latents = scheduler.add_noise(latents, noise, timesteps)
+                noise = torch.randn_like(latents)
+                noise_latents = scheduler.add_noise(latents, noise, timesteps)
 
-                    # encode input
-                    encoder_hidden_states = text_encoder(input_ids, return_dict=False)[
-                        0
-                    ]
+                # encode input
+                encoder_hidden_states = text_encoder(input_ids, return_dict=False)[
+                    0
+                ]
 
-                    # forward pass
+                # forward pass
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                     output = unet(
                         sample=noise_latents,
                         timestep=timesteps,
@@ -327,32 +318,43 @@ def training(config: dict, base_dir: str, device: str):
                     loss = loss_fn(output.float(), target.float())
                     val_loss += loss.item()
 
-            total_val_loss = val_loss / val_samples
-            val_losses.append(total_val_loss)
-            print(f'Epoch {epoch + 1}, val Loss: {total_val_loss:.4f}')
+        total_val_loss = val_loss / val_samples
+        val_losses.append(total_val_loss)
+        print(f'Epoch {epoch + 1}, val ;oss: {total_val_loss:.4f}')
 
-            if current_loss > total_val_loss:
-                current_loss = total_val_loss
+        if current_loss > total_val_loss:
+            current_loss = total_val_loss
 
-                # save best model state
-                unet.to('cpu')
-                best_model_state = deepcopy(unet)
-                unet.to(device)
+            # save best model state
+            unet.to('cpu')
+            best_model_state = deepcopy(unet)
+            unet.to(device)
 
-                best_epoch = epoch
-                patience = config['patience']
+            best_epoch = epoch
+            patience = config['patience']
 
-            else:
-                patience -= 1
+        else:
+            patience -= 1
 
-            if patience == 0:
-                break
+        if patience == 0:
+            break
 
     print(f'best epoch {best_epoch}')
     print('LoRA training finished')
     print(f'train losses: {losses}')
     print(f'val losses: {val_losses}')
-    save_lora_weight(best_model_state, f'{base_dir}/lora_weight.pt')
+    save_lora_weight(best_model_state, f'{base_dir}/{config["style"]}_lora_weight.pt')
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses, label='Training Loss')
+    plt.plot(val_losses, label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss')
+    plt.legend()
+    plt.grid()
+    plt.savefig(f'{base_dir}/losses.png')
+
     print(f'it took {time.time() - start} seconds')
 
 
@@ -362,7 +364,7 @@ def inference(config: dict, base_dir: str, device: str):
     # load diffusion model
     pipe = StableDiffusionPipeline.from_pretrained(
         config['model_name'],
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,
     ).to(device)
     pipe.safety_checker = None
 
@@ -382,6 +384,7 @@ def inference(config: dict, base_dir: str, device: str):
     patch_pipe(
         pipe,
         config['data_path'],
+        r=config['r'],
         patch_unet=True,
         patch_text=False,
         patch_ti=False,
@@ -395,6 +398,15 @@ def inference(config: dict, base_dir: str, device: str):
         guidance_scale=config['guidance_scale'],
     ).images[0]
     image.save(f'{base_dir}/lora.png')
+    # monkeypatch_add_lora(pipe.unet, torch.load(config['data_path']))
+    # tune_lora_scale(pipe.unet, 1.00)
+    # image = pipe(
+    #     config['prompt'],
+    #     num_inference_steps=config['num_inference_steps'],
+    #     guidance_scale=config['guidance_scale'],
+    # ).images[0]
+    # image.save(f'{base_dir}/lora.png')
+
 
 
 def data_preparation(config: dict, base_dir: str):
