@@ -57,7 +57,6 @@ def training(config: dict, base_dir: str, device: str):
         torch_dtype=torch.bfloat16,
     ).to(device)
     text_encoder.requires_grad_(False)
-    # text_encoder = torch.compile(text_encoder)
 
     tokenizer = CLIPTokenizer.from_pretrained(
         config['model_name'],
@@ -73,7 +72,6 @@ def training(config: dict, base_dir: str, device: str):
         torch_dtype=torch.bfloat16,
     ).to(device)
     vae.requires_grad_(False)
-    # vae = torch.compile(vae)
 
     # inject LoRA
     unet_lora_params, _ = inject_trainable_lora(
@@ -136,8 +134,6 @@ def training(config: dict, base_dir: str, device: str):
         .map(apply_transform)
         .to_tuple('image', 'input_ids', 'attention_mask')
     )
-
-    #train_dataset_limited = itertools.islice(train_dataset, 1)
       
     train_dataloader = DataLoader(
         train_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
@@ -175,6 +171,7 @@ def training(config: dict, base_dir: str, device: str):
         f'./data/{config["dataset"]}_tar/val_{config["style"]}.tar'
     )
 
+    # optimizer
     optimizer = AdamW(
         list(itertools.chain(*unet_lora_params)),
         lr=config['lr'],
@@ -187,25 +184,9 @@ def training(config: dict, base_dir: str, device: str):
     # epochs
     epochs = config['epochs']
 
-    # learning rate scheduler
-    num_training_steps = train_samples * epochs
-    warmup_steps = int(num_training_steps * 0.1)
-
-    # lr_scheduler = get_scheduler(
-    #     name='linear',
-    #     optimizer=optimizer,
-    #     num_warmup_steps=warmup_steps,
-    #     num_training_steps=num_training_steps,
-    # )
-
-    # lr_scheduler.step()
-
-    # losses
+    # collect losses
     losses = []
     val_losses = []
-
-    # gradient accumulation
-    accumulation_steps = 32 // config['batch_size']
 
     # Model saving & patience
     current_loss = 1000
@@ -270,47 +251,15 @@ def training(config: dict, base_dir: str, device: str):
 
                 # loss calculation
                 loss = loss_fn(output.float(), target.float())
-                #loss = loss / accumulation_steps
                 running_loss += loss.item()
 
-            # loss.backward()
-            # optimizer.step()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
-
-            # # gradient accumulation
-            # if (step + 1) % accumulation_steps == 0 or (step + 1) == train_samples:
-            #     print("Checking optimizer step")
-            #     param_before = next(iter(unet.parameters())).clone().detach().cpu() # Get the first layer of the model before the step
-
-            #     torch_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
-            #     print(f'total graidnet norm: {torch_norm}')
-
-            #     param_updates = []
-            #     for group in optimizer.param_groups:
-            #         for param in group['params']:
-            #             if param.grad is not None:
-            #                 param_updates.append(param.grad.abs().mean().item())
-
-            #     if len(param_updates) > 0:
-            #         avg_param_update = sum(param_updates) / len(param_updates)
-            #         print(f'Average parameter update magnitude: {avg_param_update}')
-
-            #     print(f'Learning rate {lr_scheduler.get_last_lr()}')
-            #     optimizer.step()
-            #     lr_scheduler.step()
-            #     optimizer.zero_grad(set_to_none=True)
-
-            #     param_after = next(iter(unet.parameters())).clone().detach().cpu() # Get the first layer of the model after the step
-            #     param_diff = torch.abs(param_before - param_after) # Check the absolute difference
-                
-            #     print(f'Parameter difference : {torch.mean(param_diff)}')
-
         epoch_loss = running_loss / train_samples
         losses.append(epoch_loss)
-        print("Loss", epoch_loss)
+        print(f"Epoch {epoch + 1}, train loss: {epoch_loss:.4f}")
 
 
         # val loop
@@ -371,7 +320,7 @@ def training(config: dict, base_dir: str, device: str):
 
         total_val_loss = val_loss / val_samples
         val_losses.append(total_val_loss)
-        print(f'Epoch {epoch + 1}, val Loss: {total_val_loss:.4f}')
+        print(f'Epoch {epoch + 1}, val ;oss: {total_val_loss:.4f}')
 
         if current_loss > total_val_loss:
             current_loss = total_val_loss
