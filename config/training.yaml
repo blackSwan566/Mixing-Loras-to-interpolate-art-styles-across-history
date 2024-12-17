@@ -1,12 +1,12 @@
-version: 3
+version: 2
 model_name: 'CompVis/stable-diffusion-v1-4'
 dataset: 'wikiart'
-style: 'expressionism'
+style: 'impressionism'
 prompt: 'Style3'
 epochs: 50
 lr: 0.00005
 r: 16
 dropout: 0.1
-batch_size: 8
+batch_size: 4
 weight_decay: 0.001
-patience: 15
+patience: 4

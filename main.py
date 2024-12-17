@@ -39,14 +39,14 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='scheduler',
         variant='fp16',
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
     )
 
     unet = UNet2DConditionModel.from_pretrained(
         config['model_name'],
         subfolder='unet',
         variant='fp16',
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
     ).to(device)
     unet.requires_grad_(False)
 
@@ -54,7 +54,7 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='text_encoder',
         variant='fp16',
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
     ).to(device)
     text_encoder.requires_grad_(False)
 
@@ -62,14 +62,14 @@ def training(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='tokenizer',
         variant='fp16',
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
     )
 
     vae = AutoencoderKL.from_pretrained(
         config['model_name'],
         subfolder='vae',
         variant='fp16',
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
     ).to(device)
     vae.requires_grad_(False)
 
@@ -79,7 +79,7 @@ def training(config: dict, base_dir: str, device: str):
         r=config['r'],
     )
 
-    # transform weights from bfloat16 to float32
+    # transform weights from float16 to float32
     for name, param in unet.named_parameters():
         if 'lora' in name:
             param.data = param.data.to(torch.float32)
@@ -197,7 +197,7 @@ def training(config: dict, base_dir: str, device: str):
     # scaler
     scaler = torch.amp.GradScaler()
 
-    for epoch in range(epochs):
+    for epoch in range(1, epochs + 1):
         unet.train()
         running_loss = 0.0
 
@@ -212,7 +212,7 @@ def training(config: dict, base_dir: str, device: str):
             attention_mask = batch['attention_mask'].to(device)
        
             # create noise latents
-            latents = vae.encode(image.to(dtype=torch.bfloat16)).latent_dist.sample()
+            latents = vae.encode(image.to(dtype=torch.float16)).latent_dist.sample()
             latents = latents * 0.18215
 
             timesteps = torch.randint(
@@ -231,7 +231,7 @@ def training(config: dict, base_dir: str, device: str):
             encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
 
             # forward pass
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
                 output = unet(
                     sample=noise_latents,
                     timestep=timesteps,
@@ -259,85 +259,89 @@ def training(config: dict, base_dir: str, device: str):
 
         epoch_loss = running_loss / train_samples
         losses.append(epoch_loss)
-        print(f"Epoch {epoch + 1}, train loss: {epoch_loss:.4f}")
+        print(f"Epoch {epoch}, train loss: {epoch_loss:.4f}")
 
 
         # val loop
-        unet.eval()
-        val_loss = 0.0
+        if epoch % 5 == 0:
+            unet.eval()
+            val_loss = 0.0
 
-        with torch.no_grad():
-            for _, batch in enumerate(tqdm(val_dataloader)):
-                # load data to device
-                image = batch['image'].to(device)
-                input_ids = batch['input_ids'].to(device)
-                attention_mask = batch['attention_mask'].to(device)
+            with torch.no_grad():
+                for _, batch in enumerate(tqdm(val_dataloader)):
+                    # load data to device
+                    image = batch['image'].to(device)
+                    input_ids = batch['input_ids'].to(device)
+                    attention_mask = batch['attention_mask'].to(device)
 
-                # create noise latents
-                latents = vae.encode(
-                    image.to(dtype=torch.bfloat16)
-                ).latent_dist.sample()
-                latents = latents * 0.18215
+                    # create noise latents
+                    latents = vae.encode(
+                        image.to(dtype=torch.float16)
+                    ).latent_dist.sample()
+                    latents = latents * 0.18215
 
-                timesteps = torch.randint(
-                    0,
-                    scheduler.config.num_train_timesteps,
-                    (latents.shape[0],),
-                    device=device,
-                )
-                timesteps = timesteps.long()
+                    timesteps = torch.randint(
+                        0,
+                        scheduler.config.num_train_timesteps,
+                        (latents.shape[0],),
+                        device=device,
+                    )
+                    timesteps = timesteps.long()
 
-                noise = torch.randn_like(latents)
-                noise_latents = scheduler.add_noise(latents, noise, timesteps)
+                    noise = torch.randn_like(latents)
+                    noise_latents = scheduler.add_noise(latents, noise, timesteps)
 
-                # encode input
-                encoder_hidden_states = text_encoder(input_ids, return_dict=False)[
-                    0
-                ]
+                    # encode input
+                    encoder_hidden_states = text_encoder(input_ids, return_dict=False)[
+                        0
+                    ]
 
-                # forward pass
-                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    output = unet(
-                        sample=noise_latents,
-                        timestep=timesteps,
-                        encoder_hidden_states=encoder_hidden_states,
-                        encoder_attention_mask=attention_mask,
-                    ).sample
+                    # forward pass
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        output = unet(
+                            sample=noise_latents,
+                            timestep=timesteps,
+                            encoder_hidden_states=encoder_hidden_states,
+                            encoder_attention_mask=attention_mask,
+                        ).sample
 
-                    # get target value
-                    if scheduler.config.prediction_type == 'epsilon':
-                        target = noise
-                    elif scheduler.config.prediction_type == 'v_prediction':
-                        target = scheduler.get_velocity(latents, noise, timesteps)
-                    else:
-                        raise ValueError(
-                            f'Unknown prediction type {scheduler.config.prediction_type}'
-                        )
+                        # get target value
+                        if scheduler.config.prediction_type == 'epsilon':
+                            target = noise
+                        elif scheduler.config.prediction_type == 'v_prediction':
+                            target = scheduler.get_velocity(latents, noise, timesteps)
+                        else:
+                            raise ValueError(
+                                f'Unknown prediction type {scheduler.config.prediction_type}'
+                            )
 
-                    # loss calculation
-                    loss = loss_fn(output.float(), target.float())
-                    val_loss += loss.item()
+                        # loss calculation
+                        loss = loss_fn(output.float(), target.float())
+                        val_loss += loss.item()
 
-        total_val_loss = val_loss / val_samples
-        val_losses.append(total_val_loss)
-        print(f'Epoch {epoch + 1}, val ;oss: {total_val_loss:.4f}')
+            total_val_loss = val_loss / val_samples
+            val_losses.append(total_val_loss)
+            print(f'Epoch {epoch}, val ;oss: {total_val_loss:.4f}')
 
-        if current_loss > total_val_loss:
-            current_loss = total_val_loss
+            if current_loss > total_val_loss:
+                current_loss = total_val_loss
 
-            # save best model state
-            unet.to('cpu')
-            best_model_state = deepcopy(unet)
-            unet.to(device)
+                # save best model state
+                unet.to('cpu')
+                best_model_state = deepcopy(unet)
+                unet.to(device)
 
-            best_epoch = epoch
-            patience = config['patience']
+                best_epoch = epoch
+                patience = config['patience']
 
+            else:
+                patience -= 1
+
+            if patience == 0:
+                break
+        
         else:
-            patience -= 1
-
-        if patience == 0:
-            break
+            val_losses.append(None)
 
     print(f'best epoch {best_epoch}')
     print('LoRA training finished')
