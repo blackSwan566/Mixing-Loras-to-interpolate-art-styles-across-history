@@ -30,6 +30,7 @@ import io
 from copy import deepcopy
 import time
 import matplotlib.pyplot as plt
+import pathlib
 
 def training(config: dict, base_dir: str, device: str):
     start = time.time()
@@ -410,77 +411,10 @@ def inference(config: dict, base_dir: str, device: str):
     #     guidance_scale=config['guidance_scale'],
     # ).images[0]
     # image.save(f'{base_dir}/lora.png')
+    
 
 
-
-def data_preparation(config: dict, base_dir: str):
-    # declare paths
-    image_data = f'./{base_dir}/{config["dataset"]}'
-    csv = f'./{base_dir}/{config["dataset"]}_label.csv'
-    tar_archive = f'{base_dir}/{config["style"]}_dataset.tar'
-
-    # read csv
-    labels = pd.read_csv(csv, sep='\t')
-    labels.columns = labels.columns.str.strip()
-
-    # counter
-    total_samples = 0
-
-    with tarfile.open(tar_archive, 'w') as tar:
-        for _, row in labels.iterrows():
-            image_id = row['ID']
-            author = row['AUTHOR']
-            title = row['TITLE']
-            date = row['DATE']
-
-            # Delete everything drom date thats not a number
-            date_numbers = re.sub(r'\D', '', date)
-            if not date_numbers:
-                # skip rows without numbers
-                print(f'Skipping row with invalid date: {date}')
-                continue
-
-            # filter art epochs by numbers of date: everything <1490 -> middleage everything >= 1490 & <=1600 -> renaissance everything>=1600 & <=1720 -> baroque
-            if (
-                config['start_date_epoch']
-                <= int(date_numbers)
-                <= config['end_date_epoch']
-            ):
-                image_path = os.path.join(image_data, f'{image_id}.jpg')
-
-                if os.path.exists(image_path):
-                    tar.add(image_path, arcname=f'{image_id}.jpg')
-
-                    metadata = {
-                        'painting_name': title,
-                        'author_name': author,
-                        'time': row.get('TIMELINE', 'Unknown'),
-                        'date': row.get('DATE', 'Unknown'),
-                        'location': row.get('LOCATION', 'Unknown'),
-                    }
-                    json_data = json.dumps(metadata)
-                    json_bytes = json_data.encode('utf-8')
-
-                    json_info = tarfile.TarInfo(name=f'{image_id}.json')
-                    json_info.size = len(json_bytes)
-                    tar.addfile(json_info, io.BytesIO(json_bytes))
-
-                    total_samples += 1
-
-                else:
-                    print(f'Image {image_path} not found')
-
-        total_metadata = {'total_samples': total_samples}
-        total_metadata_json = json.dumps(total_metadata)
-        total_metadata_bytes = total_metadata_json.encode('utf-8')
-
-        total_metadata_info = tarfile.TarInfo(name='total_metadata.json')
-        total_metadata_info.size = len(total_metadata_bytes)
-        tar.addfile(total_metadata_info, io.BytesIO(total_metadata_bytes))
-
-        print(f'total length: {total_samples}')
-        print(f'Tar archive created: {tar_archive}')
-
+        
 def precompute(config: dict, base_dir: str, device: str):
     # load models
     text_encoder = CLIPTextModel.from_pretrained(
@@ -531,53 +465,40 @@ def precompute(config: dict, base_dir: str, device: str):
     if not os.path.isdir(f'./data/{config["dataset"]}_precompute'):
         os.mkdir(f'./data/{config["dataset"]}_precompute')
 
+    SHARDSDIR = pathlib.Path("DATA-SHARDS")
+    SHARDSDIR.mkdir(exist_ok=True, parents=True)
 
+    dataset_path = './data/wikiart/'
+    subsets = ['train', 'val', 'test']
+    split_path = './data/wikiart_split'
+    
+    
+    for subset in subsets:
+        subset_dir = os.path.join(split_path, subset)
+        for art_epoch in os.listdir(subset_dir):
+            art_epoch_path = os.path.join(subset_dir, art_epoch)
 
-    input_tar_path = f'./data/{config["dataset"]}_tar/{config["split"]}_{config["style"]}.tar'
-    output_tar_path = f'./data/{config["dataset"]}_precompute/{config["split"]}_{config["style"]}_latents.pt'
-
-    # get length
-    def read_total_samples_from_tar(tar_filename):
-        with tarfile.open(tar_filename, 'r') as tar:
-            for member in tar.getmembers():
-                if member.name == 'total_metadata.json':
-                    f = tar.extractfile(member)
-                    total_metadata = json.load(f)
-
-                    return total_metadata.get('total_samples', 0)
-                
-    total_samples = read_total_samples_from_tar(input_tar_path)
-
-    all_precomputed_data = []
-    dataset = wds.WebDataset(
-        input_tar_path
-    ).decode('pil')
-
-    for i, sample in enumerate(tqdm(dataset, desc="Precomputing data")):
-        if 'jpg' not in sample:
-            continue
-
-        image_key = sample['__key__']
-        image = sample['jpg']
+            with wds.ShardWriter(f"{SHARDSDIR}/{art_epoch}/{subset}/shard-%06d.tar", maxcount = 100) as writer:
         
-        # transform image
-        image_tensor = image_transforms(image).unsqueeze(0).to(device, dtype=torch.bfloat16)
-
-        # forward pass of vae
-        with torch.no_grad():
-            latents = vae.encode(image_tensor).latent_dist.mean * 0.18215
-
-        # Save noise latents, encoder_hidden_states, and attention_mask
-        precomputed_data = {
-            'latents': latents.cpu(),
-            'encoder_hidden_states': encoder_hidden_states.cpu(),
-            'attention_mask': attention_mask.cpu(),
-        }
-
-        all_precomputed_data.append(precomputed_data)
-
-    torch.save(all_precomputed_data, output_tar_path)
-
+                for img_name in os.listdir(art_epoch_path):
+                    if img_name.lower().endswith('.jpg'):
+                        file_path = os.path.join(art_epoch_path, img_name)
+                        
+                        # transform image
+                        image_tensor = image_transforms(file_path).unsqueeze(0).to(device, dtype=torch.bfloat16)
+                        
+                        # forward pass of vae
+                        with torch.no_grad():
+                            latents = vae.encode(image_tensor).latent_dist.mean * 0.18215
+                        
+                        dictionary_lat_ehs_am = {
+                            'latents.npy': latents.cpu(),
+                            'encoder_hidden_states.pth': encoder_hidden_states.cpu(),
+                            'attention_mask.pth': attention_mask.cpu()
+                        }
+                        writer.write(dictionary_lat_ehs_am)
+            writer.close()
+                
 
 def main(args):
     config, base_dir = load_config(task=args.task)
