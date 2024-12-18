@@ -14,7 +14,7 @@ from diffusers import (
     AutoencoderKL,
     StableDiffusionPipeline,
 )
-from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
+from transformers import CLIPTextModel, CLIPTokenizer
 from torch.nn import MSELoss
 from torch.optim import AdamW
 from torchvision import transforms
@@ -23,14 +23,13 @@ from tqdm import tqdm
 import webdataset as wds
 import json
 import argparse
-import pandas as pd
-import re
 import os
-import io
 from copy import deepcopy
 import time
 import matplotlib.pyplot as plt
-import pathlib
+from PIL import Image
+import numpy as np
+
 
 def training(config: dict, base_dir: str, device: str):
     start = time.time()
@@ -86,7 +85,6 @@ def training(config: dict, base_dir: str, device: str):
             param.data = param.data.to(torch.float32)
             param.requires_grad = True
 
-
     # prepare data
     image_transforms = transforms.Compose(
         [
@@ -97,7 +95,7 @@ def training(config: dict, base_dir: str, device: str):
     )
 
     def tokenization(example):
-        #text = f'a painting in the art style of "{config["style"].replace("_", " ")}"'
+        # text = f'a painting in the art style of "{config["style"].replace("_", " ")}"'
         text = f'A painting in the style of {config["prompt"]}'
         return tokenizer(text, padding='max_length')
 
@@ -135,7 +133,7 @@ def training(config: dict, base_dir: str, device: str):
         .map(apply_transform)
         .to_tuple('image', 'input_ids', 'attention_mask')
     )
-      
+
     train_dataloader = DataLoader(
         train_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
     )
@@ -178,7 +176,7 @@ def training(config: dict, base_dir: str, device: str):
         lr=config['lr'],
         weight_decay=config['weight_decay'],
     )
- 
+
     # loss function
     loss_fn = MSELoss()
 
@@ -211,7 +209,7 @@ def training(config: dict, base_dir: str, device: str):
             image = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-       
+
             # create noise latents
             latents = vae.encode(image.to(dtype=torch.float16)).latent_dist.sample()
             latents = latents * 0.18215
@@ -260,8 +258,7 @@ def training(config: dict, base_dir: str, device: str):
 
         epoch_loss = running_loss / train_samples
         losses.append(epoch_loss)
-        print(f"Epoch {epoch}, train loss: {epoch_loss:.4f}")
-
+        print(f'Epoch {epoch}, train loss: {epoch_loss:.4f}')
 
         # val loop
         if epoch % 5 == 0:
@@ -340,7 +337,7 @@ def training(config: dict, base_dir: str, device: str):
 
             if patience == 0:
                 break
-        
+
         else:
             val_losses.append(None)
 
@@ -411,17 +408,15 @@ def inference(config: dict, base_dir: str, device: str):
     #     guidance_scale=config['guidance_scale'],
     # ).images[0]
     # image.save(f'{base_dir}/lora.png')
-    
 
 
-        
 def precompute(config: dict, base_dir: str, device: str):
     # load models
     text_encoder = CLIPTextModel.from_pretrained(
         config['model_name'],
         subfolder='text_encoder',
         variant='fp16',
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
     ).to(device)
     text_encoder.requires_grad_(False)
 
@@ -429,14 +424,14 @@ def precompute(config: dict, base_dir: str, device: str):
         config['model_name'],
         subfolder='tokenizer',
         variant='fp16',
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
     )
 
     vae = AutoencoderKL.from_pretrained(
         config['model_name'],
         subfolder='vae',
         variant='fp16',
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
     ).to(device)
     vae.requires_grad_(False)
 
@@ -451,7 +446,6 @@ def precompute(config: dict, base_dir: str, device: str):
     with torch.no_grad():
         encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
 
-
     # transformation
     image_transforms = transforms.Compose(
         [
@@ -461,44 +455,75 @@ def precompute(config: dict, base_dir: str, device: str):
         ]
     )
 
-     # data paths
-    if not os.path.isdir(f'./data/{config["dataset"]}_precompute'):
-        os.mkdir(f'./data/{config["dataset"]}_precompute')
+    # data path
+    shards_dir = f'./data/{config["dataset"]}_precomputed'
+    if not os.path.isdir(shards_dir):
+        os.mkdir(shards_dir)
 
-    SHARDSDIR = pathlib.Path("DATA-SHARDS")
-    SHARDSDIR.mkdir(exist_ok=True, parents=True)
-
-    dataset_path = './data/wikiart/'
     subsets = ['train', 'val', 'test']
-    split_path = './data/wikiart_split'
-    
-    
+    split_path = f'./data/{config["dataset"]}_split'
+
     for subset in subsets:
         subset_dir = os.path.join(split_path, subset)
+
+        # create split folder
+        precomputed_subset_dir = shards_dir + f'/{subset}'
+        if not os.path.isdir(precomputed_subset_dir):
+            os.mkdir(precomputed_subset_dir)
+
         for art_epoch in os.listdir(subset_dir):
             art_epoch_path = os.path.join(subset_dir, art_epoch)
 
-            with wds.ShardWriter(f"{SHARDSDIR}/{art_epoch}/{subset}/shard-%06d.tar", maxcount = 100) as writer:
-        
-                for img_name in os.listdir(art_epoch_path):
-                    if img_name.lower().endswith('.jpg'):
-                        file_path = os.path.join(art_epoch_path, img_name)
-                        
-                        # transform image
-                        image_tensor = image_transforms(file_path).unsqueeze(0).to(device, dtype=torch.bfloat16)
-                        
-                        # forward pass of vae
-                        with torch.no_grad():
-                            latents = vae.encode(image_tensor).latent_dist.mean * 0.18215
-                        
-                        dictionary_lat_ehs_am = {
-                            'latents.npy': latents.cpu(),
-                            'encoder_hidden_states.pth': encoder_hidden_states.cpu(),
-                            'attention_mask.pth': attention_mask.cpu()
-                        }
-                        writer.write(dictionary_lat_ehs_am)
+            # create art epoch folder
+            precomputed_subset_epoch_dir = (
+                precomputed_subset_dir + f'/{art_epoch.lower()}'
+            )
+            if not os.path.isdir(precomputed_subset_epoch_dir):
+                os.mkdir(precomputed_subset_epoch_dir)
+
+            # wds writer for each epoch
+            writer = wds.ShardWriter(
+                os.path.join(precomputed_subset_epoch_dir, 'data-%06d.tar'),
+                maxsize=500 * 1024 * 1024,
+                start_shard=0,
+            )
+
+            for img_name in tqdm(
+                os.listdir(art_epoch_path), desc=f'Processing images in {art_epoch}'
+            ):
+                if img_name.lower().endswith('.jpg'):
+                    file_path = os.path.join(art_epoch_path, img_name)
+
+                    # open image
+                    image = Image.open(file_path).convert(
+                        'RGB'
+                    )  # Convert to RGB to ensure consistency
+
+                    # transform image
+                    image_tensor = (
+                        image_transforms(image)
+                        .unsqueeze(0)
+                        .to(device, dtype=torch.float16)
+                    )
+
+                    # forward pass of vae
+                    with torch.no_grad():
+                        latents = (
+                            vae.encode(image_tensor).latent_dist.sample() * 0.18215
+                        )
+
+                    dictionary_lat_ehs_am = {
+                        '__key__': img_name.lower(),
+                        'latents.npy': latents.detach().cpu().numpy(),
+                        'encoder_hidden_states.npy': encoder_hidden_states.detach()
+                        .cpu()
+                        .numpy(),
+                        'attention_mask.npy': attention_mask.detach().cpu().numpy(),
+                    }
+                    writer.write(dictionary_lat_ehs_am)
+
             writer.close()
-                
+
 
 def main(args):
     config, base_dir = load_config(task=args.task)
