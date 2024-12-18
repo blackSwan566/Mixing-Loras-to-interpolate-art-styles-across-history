@@ -14,7 +14,7 @@ from diffusers import (
     AutoencoderKL,
     StableDiffusionPipeline,
 )
-from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
+from transformers import CLIPTextModel, CLIPTokenizer
 from torch.nn import MSELoss
 from torch.optim import AdamW
 from torchvision import transforms
@@ -23,13 +23,13 @@ from tqdm import tqdm
 import webdataset as wds
 import json
 import argparse
-import pandas as pd
-import re
 import os
-import io
 from copy import deepcopy
 import time
 import matplotlib.pyplot as plt
+from PIL import Image
+import numpy as np
+
 
 def training(config: dict, base_dir: str, device: str):
     start = time.time()
@@ -85,7 +85,6 @@ def training(config: dict, base_dir: str, device: str):
             param.data = param.data.to(torch.float32)
             param.requires_grad = True
 
-
     # prepare data
     image_transforms = transforms.Compose(
         [
@@ -96,7 +95,7 @@ def training(config: dict, base_dir: str, device: str):
     )
 
     def tokenization(example):
-        #text = f'a painting in the art style of "{config["style"].replace("_", " ")}"'
+        # text = f'a painting in the art style of "{config["style"].replace("_", " ")}"'
         text = f'A painting in the style of {config["prompt"]}'
         return tokenizer(text, padding='max_length')
 
@@ -134,7 +133,7 @@ def training(config: dict, base_dir: str, device: str):
         .map(apply_transform)
         .to_tuple('image', 'input_ids', 'attention_mask')
     )
-      
+
     train_dataloader = DataLoader(
         train_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
     )
@@ -177,7 +176,7 @@ def training(config: dict, base_dir: str, device: str):
         lr=config['lr'],
         weight_decay=config['weight_decay'],
     )
- 
+
     # loss function
     loss_fn = MSELoss()
 
@@ -210,7 +209,7 @@ def training(config: dict, base_dir: str, device: str):
             image = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-       
+
             # create noise latents
             latents = vae.encode(image.to(dtype=torch.float16)).latent_dist.sample()
             latents = latents * 0.18215
@@ -259,8 +258,7 @@ def training(config: dict, base_dir: str, device: str):
 
         epoch_loss = running_loss / train_samples
         losses.append(epoch_loss)
-        print(f"Epoch {epoch}, train loss: {epoch_loss:.4f}")
-
+        print(f'Epoch {epoch}, train loss: {epoch_loss:.4f}')
 
         # val loop
         if epoch % 5 == 0:
@@ -339,7 +337,7 @@ def training(config: dict, base_dir: str, device: str):
 
             if patience == 0:
                 break
-        
+
         else:
             val_losses.append(None)
 
@@ -412,74 +410,119 @@ def inference(config: dict, base_dir: str, device: str):
     # image.save(f'{base_dir}/lora.png')
 
 
+def precompute(config: dict, base_dir: str, device: str):
+    # load models
+    text_encoder = CLIPTextModel.from_pretrained(
+        config['model_name'],
+        subfolder='text_encoder',
+        variant='fp16',
+        torch_dtype=torch.float16,
+    ).to(device)
+    text_encoder.requires_grad_(False)
 
-def data_preparation(config: dict, base_dir: str):
-    # declare paths
-    image_data = f'./{base_dir}/{config["dataset"]}'
-    csv = f'./{base_dir}/{config["dataset"]}_label.csv'
-    tar_archive = f'{base_dir}/{config["style"]}_dataset.tar'
+    tokenizer = CLIPTokenizer.from_pretrained(
+        config['model_name'],
+        subfolder='tokenizer',
+        variant='fp16',
+        torch_dtype=torch.float16,
+    )
 
-    # read csv
-    labels = pd.read_csv(csv, sep='\t')
-    labels.columns = labels.columns.str.strip()
+    vae = AutoencoderKL.from_pretrained(
+        config['model_name'],
+        subfolder='vae',
+        variant='fp16',
+        torch_dtype=torch.float16,
+    ).to(device)
+    vae.requires_grad_(False)
 
-    # counter
-    total_samples = 0
+    # create prompt
+    prompt = f'A painting in the style of {config["prompt"]}'
+    tokenized = tokenizer(prompt, padding='max_length', return_tensors='pt')
 
-    with tarfile.open(tar_archive, 'w') as tar:
-        for _, row in labels.iterrows():
-            image_id = row['ID']
-            author = row['AUTHOR']
-            title = row['TITLE']
-            date = row['DATE']
+    # create encoder_hidden_states and attention_mask for unet model
+    input_ids = tokenized['input_ids'].to(device)
+    attention_mask = tokenized['attention_mask'].to(device)
 
-            # Delete everything drom date thats not a number
-            date_numbers = re.sub(r'\D', '', date)
-            if not date_numbers:
-                # skip rows without numbers
-                print(f'Skipping row with invalid date: {date}')
-                continue
+    with torch.no_grad():
+        encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
 
-            # filter art epochs by numbers of date: everything <1490 -> middleage everything >= 1490 & <=1600 -> renaissance everything>=1600 & <=1720 -> baroque
-            if (
-                config['start_date_epoch']
-                <= int(date_numbers)
-                <= config['end_date_epoch']
+    # transformation
+    image_transforms = transforms.Compose(
+        [
+            transforms.Resize((512, 512)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+        ]
+    )
+
+    # data path
+    shards_dir = f'./data/{config["dataset"]}_precomputed'
+    if not os.path.isdir(shards_dir):
+        os.mkdir(shards_dir)
+
+    subsets = ['train', 'val', 'test']
+    split_path = f'./data/{config["dataset"]}_split'
+
+    for subset in subsets:
+        subset_dir = os.path.join(split_path, subset)
+
+        # create split folder
+        precomputed_subset_dir = shards_dir + f'/{subset}'
+        if not os.path.isdir(precomputed_subset_dir):
+            os.mkdir(precomputed_subset_dir)
+
+        for art_epoch in os.listdir(subset_dir):
+            art_epoch_path = os.path.join(subset_dir, art_epoch)
+
+            # create art epoch folder
+            precomputed_subset_epoch_dir = (
+                precomputed_subset_dir + f'/{art_epoch.lower()}'
+            )
+            if not os.path.isdir(precomputed_subset_epoch_dir):
+                os.mkdir(precomputed_subset_epoch_dir)
+
+            # wds writer for each epoch
+            writer = wds.ShardWriter(
+                os.path.join(precomputed_subset_epoch_dir, 'data-%06d.tar'),
+                maxsize=500 * 1024 * 1024,
+                start_shard=0,
+            )
+
+            for img_name in tqdm(
+                os.listdir(art_epoch_path), desc=f'Processing images in {art_epoch}'
             ):
-                image_path = os.path.join(image_data, f'{image_id}.jpg')
+                if img_name.lower().endswith('.jpg'):
+                    file_path = os.path.join(art_epoch_path, img_name)
 
-                if os.path.exists(image_path):
-                    tar.add(image_path, arcname=f'{image_id}.jpg')
+                    # open image
+                    image = Image.open(file_path).convert(
+                        'RGB'
+                    )  # Convert to RGB to ensure consistency
 
-                    metadata = {
-                        'painting_name': title,
-                        'author_name': author,
-                        'time': row.get('TIMELINE', 'Unknown'),
-                        'date': row.get('DATE', 'Unknown'),
-                        'location': row.get('LOCATION', 'Unknown'),
+                    # transform image
+                    image_tensor = (
+                        image_transforms(image)
+                        .unsqueeze(0)
+                        .to(device, dtype=torch.float16)
+                    )
+
+                    # forward pass of vae
+                    with torch.no_grad():
+                        latents = (
+                            vae.encode(image_tensor).latent_dist.sample() * 0.18215
+                        )
+
+                    dictionary_lat_ehs_am = {
+                        '__key__': img_name.lower(),
+                        'latents.npy': latents.detach().cpu().numpy(),
+                        'encoder_hidden_states.npy': encoder_hidden_states.detach()
+                        .cpu()
+                        .numpy(),
+                        'attention_mask.npy': attention_mask.detach().cpu().numpy(),
                     }
-                    json_data = json.dumps(metadata)
-                    json_bytes = json_data.encode('utf-8')
+                    writer.write(dictionary_lat_ehs_am)
 
-                    json_info = tarfile.TarInfo(name=f'{image_id}.json')
-                    json_info.size = len(json_bytes)
-                    tar.addfile(json_info, io.BytesIO(json_bytes))
-
-                    total_samples += 1
-
-                else:
-                    print(f'Image {image_path} not found')
-
-        total_metadata = {'total_samples': total_samples}
-        total_metadata_json = json.dumps(total_metadata)
-        total_metadata_bytes = total_metadata_json.encode('utf-8')
-
-        total_metadata_info = tarfile.TarInfo(name='total_metadata.json')
-        total_metadata_info.size = len(total_metadata_bytes)
-        tar.addfile(total_metadata_info, io.BytesIO(total_metadata_bytes))
-
-        print(f'total length: {total_samples}')
-        print(f'Tar archive created: {tar_archive}')
+            writer.close()
 
 
 def main(args):
@@ -494,6 +537,9 @@ def main(args):
 
     elif args.task == 'data_preparation':
         data_preparation(config, base_dir)
+
+    elif args.task == 'precompute':
+        precompute(config, base_dir, device)
 
 
 if __name__ == '__main__':
@@ -513,6 +559,10 @@ if __name__ == '__main__':
 
     data_preparation_parser = subparsers.add_parser(
         'data_preparation', help='prepares the data'
+    )
+
+    precomputed_parser = subparsers.add_parser(
+        'precompute', help='precomputed the data'
     )
 
     args = parser.parse_args()
