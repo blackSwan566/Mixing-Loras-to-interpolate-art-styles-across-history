@@ -11,10 +11,8 @@ from lora_diffusion import (
 from diffusers import (
     UNet2DConditionModel,
     DDPMScheduler,
-    AutoencoderKL,
     StableDiffusionPipeline,
 )
-from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 from torch.nn import MSELoss
 from torch.optim import AdamW
 from torchvision import transforms
@@ -30,6 +28,7 @@ import io
 from copy import deepcopy
 import time
 import matplotlib.pyplot as plt
+
 
 def training(config: dict, base_dir: str, device: str):
     start = time.time()
@@ -50,29 +49,6 @@ def training(config: dict, base_dir: str, device: str):
     ).to(device)
     unet.requires_grad_(False)
 
-    text_encoder = CLIPTextModel.from_pretrained(
-        config['model_name'],
-        subfolder='text_encoder',
-        variant='fp16',
-        torch_dtype=torch.float16,
-    ).to(device)
-    text_encoder.requires_grad_(False)
-
-    tokenizer = CLIPTokenizer.from_pretrained(
-        config['model_name'],
-        subfolder='tokenizer',
-        variant='fp16',
-        torch_dtype=torch.float16,
-    )
-
-    vae = AutoencoderKL.from_pretrained(
-        config['model_name'],
-        subfolder='vae',
-        variant='fp16',
-        torch_dtype=torch.float16,
-    ).to(device)
-    vae.requires_grad_(False)
-
     # inject LoRA
     unet_lora_params, _ = inject_trainable_lora(
         model=unet,
@@ -85,59 +61,22 @@ def training(config: dict, base_dir: str, device: str):
             param.data = param.data.to(torch.float32)
             param.requires_grad = True
 
-
-    # prepare data
-    image_transforms = transforms.Compose(
-        [
-            transforms.Resize((512, 512)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-        ]
-    )
-
-    def tokenization(example):
-        #text = f'a painting in the art style of "{config["style"].replace("_", " ")}"'
-        text = f'A painting in the style of {config["prompt"]}'
-        return tokenizer(text, padding='max_length')
-
-    def apply_transform(sample):
-        if 'jpg' not in sample:
-            return None
-
-        sample['image'] = image_transforms(sample['jpg'])
-
-        tokenized = tokenization(sample)
-        sample['input_ids'] = tokenized['input_ids']
-        sample['attention_mask'] = tokenized['attention_mask']
+    # map numpy to tensor
+    def numpy_to_tensor(sample):
+        sample['attention_mask'] = torch.tensor(sample['attention_mask'])
+        sample['latents'] = torch.tensor(sample['latents'])
+        sample['encoder_hidden_states'] = torch.tensor(sample['encoder_hidden_states'])
 
         return sample
 
-    def collate_fn(batch):
-        images, input_ids, attention_masks = zip(*batch)
-
-        return {
-            'image': torch.stack(images),
-            'input_ids': torch.stack([torch.tensor(ids) for ids in input_ids]),
-            'attention_mask': torch.stack(
-                [torch.tensor(mask) for mask in attention_masks]
-            ),
-        }
-
     # train data
     train_dataset = (
-        wds.WebDataset(
-            f'./data/{config["dataset"]}_tar/train_{config["style"]}.tar',
-            shardshuffle=1024,
-        )
-        .decode('pil')
+        wds.WebDataset(f'./data/{config["dataset"]}_tar/train_{config["style"]}.tar')
         .shuffle(1024)
-        .map(apply_transform)
-        .to_tuple('image', 'input_ids', 'attention_mask')
+        .batched(config['batch_size'])
+        .map(numpy_to_tensor)
     )
-      
-    train_dataloader = DataLoader(
-        train_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
-    )
+    train_dataloader = DataLoader(train_dataset, batch_size=None, shuffle=False)
 
     # val data
     val_dataset = (
@@ -145,14 +84,11 @@ def training(config: dict, base_dir: str, device: str):
             f'./data/{config["dataset"]}_tar/val_{config["style"]}.tar',
             shardshuffle=1024,
         )
-        .decode('pil')
         .shuffle(1024)
-        .map(apply_transform)
-        .to_tuple('image', 'input_ids', 'attention_mask')
+        .batched(config['batch_size'])
+        .map(numpy_to_tensor)
     )
-    val_dataloader = DataLoader(
-        val_dataset, config['batch_size'], shuffle=False, collate_fn=collate_fn
-    )
+    val_dataloader = DataLoader(val_dataset, batch_size=None, shuffle=False)
 
     def read_total_samples_from_tar(tar_filename):
         with tarfile.open(tar_filename, 'r') as tar:
@@ -177,7 +113,7 @@ def training(config: dict, base_dir: str, device: str):
         lr=config['lr'],
         weight_decay=config['weight_decay'],
     )
- 
+
     # loss function
     loss_fn = MSELoss()
 
@@ -207,14 +143,11 @@ def training(config: dict, base_dir: str, device: str):
             optimizer.zero_grad(set_to_none=True)
 
             # load data to device
-            image = batch['image'].to(device)
-            input_ids = batch['input_ids'].to(device)
+            latents = batch['latents'].to(device)
+            encoder_hidden_states = batch['encoder_hidden_states'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-       
-            # create noise latents
-            latents = vae.encode(image.to(dtype=torch.float16)).latent_dist.sample()
-            latents = latents * 0.18215
 
+            # create noisy latents
             timesteps = torch.randint(
                 0,
                 scheduler.config.num_train_timesteps,
@@ -226,9 +159,6 @@ def training(config: dict, base_dir: str, device: str):
 
             noise = torch.randn_like(latents)
             noise_latents = scheduler.add_noise(latents, noise, timesteps)
-
-            # encode input
-            encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0]
 
             # forward pass
             with torch.autocast(device_type='cuda', dtype=torch.float16):
@@ -253,14 +183,19 @@ def training(config: dict, base_dir: str, device: str):
                 loss = loss_fn(output.float(), target.float())
                 running_loss += loss.item()
 
+            # free space
+            del latents
+            del encoder_hidden_states
+            del attention_mask
+            torch.cuda.empty_cache()
+
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
         epoch_loss = running_loss / train_samples
         losses.append(epoch_loss)
-        print(f"Epoch {epoch}, train loss: {epoch_loss:.4f}")
-
+        print(f'Epoch {epoch}, train loss: {epoch_loss:.4f}')
 
         # val loop
         if epoch % 5 == 0:
@@ -270,16 +205,11 @@ def training(config: dict, base_dir: str, device: str):
             with torch.no_grad():
                 for _, batch in enumerate(tqdm(val_dataloader)):
                     # load data to device
-                    image = batch['image'].to(device)
-                    input_ids = batch['input_ids'].to(device)
+                    latents = batch['latents'].to(device)
+                    encoder_hidden_states = batch['encoder_hidden_states'].to(device)
                     attention_mask = batch['attention_mask'].to(device)
 
                     # create noise latents
-                    latents = vae.encode(
-                        image.to(dtype=torch.float16)
-                    ).latent_dist.sample()
-                    latents = latents * 0.18215
-
                     timesteps = torch.randint(
                         0,
                         scheduler.config.num_train_timesteps,
@@ -290,11 +220,6 @@ def training(config: dict, base_dir: str, device: str):
 
                     noise = torch.randn_like(latents)
                     noise_latents = scheduler.add_noise(latents, noise, timesteps)
-
-                    # encode input
-                    encoder_hidden_states = text_encoder(input_ids, return_dict=False)[
-                        0
-                    ]
 
                     # forward pass
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
@@ -319,6 +244,12 @@ def training(config: dict, base_dir: str, device: str):
                         loss = loss_fn(output.float(), target.float())
                         val_loss += loss.item()
 
+                    # free space
+                    del latents
+                    del encoder_hidden_states
+                    del attention_mask
+                    torch.cuda.empty_cache()
+
             total_val_loss = val_loss / val_samples
             val_losses.append(total_val_loss)
             print(f'Epoch {epoch}, val ;oss: {total_val_loss:.4f}')
@@ -339,7 +270,7 @@ def training(config: dict, base_dir: str, device: str):
 
             if patience == 0:
                 break
-        
+
         else:
             val_losses.append(None)
 
@@ -349,6 +280,7 @@ def training(config: dict, base_dir: str, device: str):
     print(f'val losses: {val_losses}')
     save_lora_weight(best_model_state, f'{base_dir}/{config["style"]}_lora_weight.pt')
 
+    # plot losses
     plt.figure(figsize=(10, 5))
     plt.plot(losses, label='Training Loss')
     plt.plot(val_losses, label='Validation Loss')
@@ -402,15 +334,6 @@ def inference(config: dict, base_dir: str, device: str):
         guidance_scale=config['guidance_scale'],
     ).images[0]
     image.save(f'{base_dir}/lora.png')
-    # monkeypatch_add_lora(pipe.unet, torch.load(config['data_path']))
-    # tune_lora_scale(pipe.unet, 1.00)
-    # image = pipe(
-    #     config['prompt'],
-    #     num_inference_steps=config['num_inference_steps'],
-    #     guidance_scale=config['guidance_scale'],
-    # ).images[0]
-    # image.save(f'{base_dir}/lora.png')
-
 
 
 def data_preparation(config: dict, base_dir: str):
