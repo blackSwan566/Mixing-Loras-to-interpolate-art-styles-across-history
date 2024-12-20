@@ -1,0 +1,6 @@
+version: 1
+model_name: 'CompVis/stable-diffusion-v1-4'
+dataset: 'wikiart'
+style: 'early_renaissance'
+split: 'test'
+prompt: 'Style1'

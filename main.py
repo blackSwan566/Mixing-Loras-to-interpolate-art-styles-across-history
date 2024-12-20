@@ -1,5 +1,4 @@
 import itertools
-import tarfile
 from src.utils.functions import load_config
 import torch
 from lora_diffusion import (
@@ -11,23 +10,26 @@ from lora_diffusion import (
 from diffusers import (
     UNet2DConditionModel,
     DDPMScheduler,
+    AutoencoderKL,
     StableDiffusionPipeline,
 )
+from transformers import CLIPTextModel, CLIPTokenizer
 from torch.nn import MSELoss
 from torch.optim import AdamW
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import webdataset as wds
-import json
 import argparse
-import pandas as pd
-import re
 import os
-import io
 from copy import deepcopy
 import time
 import matplotlib.pyplot as plt
+from PIL import Image
+import numpy as np
+import io
+import glob
+
 
 
 def training(config: dict, base_dir: str, device: str):
@@ -49,6 +51,38 @@ def training(config: dict, base_dir: str, device: str):
     ).to(device)
     unet.requires_grad_(False)
 
+    text_encoder = CLIPTextModel.from_pretrained(
+        config['model_name'],
+        subfolder='text_encoder',
+        variant='fp16',
+        torch_dtype=torch.float16,
+    ).to(device)
+    text_encoder.requires_grad_(False)
+
+    tokenizer = CLIPTokenizer.from_pretrained(
+        config['model_name'],
+        subfolder='tokenizer',
+        variant='fp16',
+        torch_dtype=torch.float16,
+    )
+    
+    # create attention_mask and encoder hidden states
+    text = f'A painting in the style of {config["prompt"]}'
+    tokenized = tokenizer(text, padding='max_length', return_tensors="pt")
+
+    attention_masks = tokenized['attention_mask']
+    one_attention_mask = torch.stack([torch.tensor(mask) for mask in attention_masks]).to('cpu')
+
+    input_ids = tokenized['input_ids'].to(device)
+    input_ids = torch.stack([torch.tensor(ids) for ids in input_ids])
+    one_encoder_hidden_states = text_encoder(input_ids, return_dict=False)[0].to('cpu')
+
+    # free space
+    del tokenizer
+    del text_encoder
+    del input_ids
+    torch.cuda.empty_cache()
+   
     # inject LoRA
     unet_lora_params, _ = inject_trainable_lora(
         model=unet,
@@ -60,52 +94,42 @@ def training(config: dict, base_dir: str, device: str):
         if 'lora' in name:
             param.data = param.data.to(torch.float32)
             param.requires_grad = True
-
+    
     # map numpy to tensor
-    def numpy_to_tensor(sample):
-        sample['attention_mask'] = torch.tensor(sample['attention_mask'])
-        sample['latents'] = torch.tensor(sample['latents'])
-        sample['encoder_hidden_states'] = torch.tensor(sample['encoder_hidden_states'])
+    def numpy_to_tensor(sample, key):
+        data = sample[key]
+        numpy_data = np.load(io.BytesIO(data))
+        tensor_data = torch.from_numpy(numpy_data).to(dtype=torch.float16).squeeze()
+        
+        return tensor_data
+    
+    def map_data(sample):
+        latents = numpy_to_tensor(sample, 'latents.npy')
+        name = sample['__key__']
 
-        return sample
-
+        return (name, latents)
+    
     # train data
+    train_path = glob.glob(f'./data/{config["dataset"]}_precomputed/train/{config["style"]}/data-*.tar')
     train_dataset = (
-        wds.WebDataset(f'./data/{config["dataset"]}_tar/train_{config["style"]}.tar')
+        wds.WebDataset(train_path)
         .shuffle(1024)
+        .map(map_data)
         .batched(config['batch_size'])
-        .map(numpy_to_tensor)
     )
     train_dataloader = DataLoader(train_dataset, batch_size=None, shuffle=False)
 
     # val data
+    val_path = glob.glob(f'./data/{config["dataset"]}_precomputed/val/{config["style"]}/data-*.tar')
     val_dataset = (
         wds.WebDataset(
-            f'./data/{config["dataset"]}_tar/val_{config["style"]}.tar',
-            shardshuffle=1024,
+           val_path
         )
         .shuffle(1024)
+        .map(map_data)
         .batched(config['batch_size'])
-        .map(numpy_to_tensor)
     )
     val_dataloader = DataLoader(val_dataset, batch_size=None, shuffle=False)
-
-    def read_total_samples_from_tar(tar_filename):
-        with tarfile.open(tar_filename, 'r') as tar:
-            for member in tar.getmembers():
-                if member.name == 'total_metadata.json':
-                    f = tar.extractfile(member)
-                    total_metadata = json.load(f)
-
-                    return total_metadata.get('total_samples', 0)
-
-    # get train and val length
-    train_samples = read_total_samples_from_tar(
-        f'./data/{config["dataset"]}_tar/train_{config["style"]}.tar'
-    )
-    val_samples = read_total_samples_from_tar(
-        f'./data/{config["dataset"]}_tar/val_{config["style"]}.tar'
-    )
 
     # optimizer
     optimizer = AdamW(
@@ -133,20 +157,27 @@ def training(config: dict, base_dir: str, device: str):
     # scaler
     scaler = torch.amp.GradScaler()
 
+    # counter for dataset lengs
+    train_counter = 0
+    val_counter = 0
+
     for epoch in range(1, epochs + 1):
         unet.train()
         running_loss = 0.0
 
         for step, batch in enumerate(
-            tqdm(train_dataloader, desc=f'Epoch:[{epoch + 1}|{epochs}]')
+            tqdm(train_dataloader, desc=f'Epoch:[{epoch}|{epochs}]')
         ):
             optimizer.zero_grad(set_to_none=True)
 
             # load data to device
-            latents = batch['latents'].to(device)
-            encoder_hidden_states = batch['encoder_hidden_states'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
+            _, latents = batch
+            latents = latents.to(device)
 
+            # duplicate encoder_hidden_states and attention_mask to batch size
+            encoder_hidden_states = one_encoder_hidden_states.repeat(latents.shape[0], 1, 1).to(device)
+            attention_mask = one_attention_mask.repeat(latents.shape[0], 1).to(device)
+            
             # create noisy latents
             timesteps = torch.randint(
                 0,
@@ -182,97 +213,113 @@ def training(config: dict, base_dir: str, device: str):
                 # loss calculation
                 loss = loss_fn(output.float(), target.float())
                 running_loss += loss.item()
+            
+            train_counter += len(latents)
 
             # free space
             del latents
+            del timesteps
+            del noise
+            del noise_latents
             del encoder_hidden_states
             del attention_mask
+            del output
+            del target
             torch.cuda.empty_cache()
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
-        epoch_loss = running_loss / train_samples
+
+        epoch_loss = running_loss / train_counter
         losses.append(epoch_loss)
         print(f'Epoch {epoch}, train loss: {epoch_loss:.4f}')
 
         # val loop
-        if epoch % 5 == 0:
-            unet.eval()
-            val_loss = 0.0
+        
+        unet.eval()
+        val_loss = 0.0
 
-            with torch.no_grad():
-                for _, batch in enumerate(tqdm(val_dataloader)):
-                    # load data to device
-                    latents = batch['latents'].to(device)
-                    encoder_hidden_states = batch['encoder_hidden_states'].to(device)
-                    attention_mask = batch['attention_mask'].to(device)
+        with torch.no_grad():
+            for _, batch in enumerate(tqdm(val_dataloader)):
+                # load data to device
+                _, latents = batch       
+                latents = latents.to(device)
 
-                    # create noise latents
-                    timesteps = torch.randint(
-                        0,
-                        scheduler.config.num_train_timesteps,
-                        (latents.shape[0],),
-                        device=device,
-                    )
-                    timesteps = timesteps.long()
+                # duplicate encoder_hidden_states and attention_mask to batch size
+                encoder_hidden_states = one_encoder_hidden_states.repeat(latents.shape[0], 1, 1).to(device)
+                attention_mask = one_attention_mask.repeat(latents.shape[0], 1).to(device)
 
-                    noise = torch.randn_like(latents)
-                    noise_latents = scheduler.add_noise(latents, noise, timesteps)
+                # create noise latents
+                timesteps = torch.randint(
+                    0,
+                    scheduler.config.num_train_timesteps,
+                    (latents.shape[0],),
+                    device=device,
+                )
+                timesteps = timesteps.long()
 
-                    # forward pass
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
-                        output = unet(
-                            sample=noise_latents,
-                            timestep=timesteps,
-                            encoder_hidden_states=encoder_hidden_states,
-                            encoder_attention_mask=attention_mask,
-                        ).sample
+                noise = torch.randn_like(latents)
+                noise_latents = scheduler.add_noise(latents, noise, timesteps)
 
-                        # get target value
-                        if scheduler.config.prediction_type == 'epsilon':
-                            target = noise
-                        elif scheduler.config.prediction_type == 'v_prediction':
-                            target = scheduler.get_velocity(latents, noise, timesteps)
-                        else:
-                            raise ValueError(
-                                f'Unknown prediction type {scheduler.config.prediction_type}'
-                            )
+                # forward pass
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    output = unet(
+                        sample=noise_latents,
+                        timestep=timesteps,
+                        encoder_hidden_states=encoder_hidden_states,
+                        encoder_attention_mask=attention_mask,
+                    ).sample
 
-                        # loss calculation
-                        loss = loss_fn(output.float(), target.float())
-                        val_loss += loss.item()
+                    # get target value
+                    if scheduler.config.prediction_type == 'epsilon':
+                        target = noise
+                    elif scheduler.config.prediction_type == 'v_prediction':
+                        target = scheduler.get_velocity(latents, noise, timesteps)
+                    else:
+                        raise ValueError(
+                            f'Unknown prediction type {scheduler.config.prediction_type}'
+                        )
 
-                    # free space
-                    del latents
-                    del encoder_hidden_states
-                    del attention_mask
-                    torch.cuda.empty_cache()
+                    # loss calculation
+                    loss = loss_fn(output.float(), target.float())
+                    val_loss += loss.item()
 
-            total_val_loss = val_loss / val_samples
-            val_losses.append(total_val_loss)
-            print(f'Epoch {epoch}, val ;oss: {total_val_loss:.4f}')
+                val_counter += len(latents)
 
-            if current_loss > total_val_loss:
-                current_loss = total_val_loss
+                # free space
+                del latents
+                del timesteps
+                del noise
+                del noise_latents
+                del encoder_hidden_states
+                del attention_mask
+                del output
+                del target
+                torch.cuda.empty_cache()
 
-                # save best model state
-                unet.to('cpu')
-                best_model_state = deepcopy(unet)
-                unet.to(device)
+        total_val_loss = val_loss / val_counter
+        val_losses.append(total_val_loss)
+        print(f'Epoch {epoch}, val loss: {total_val_loss:.4f}')
 
-                best_epoch = epoch
-                patience = config['patience']
+        if current_loss > total_val_loss:
+            current_loss = total_val_loss
 
-            else:
-                patience -= 1
+            # save best model state
+            unet.to('cpu')
+            best_model_state = deepcopy(unet)
+            unet.to(device)
 
-            if patience == 0:
-                break
+            best_epoch = epoch
+            patience = config['patience']
 
         else:
-            val_losses.append(None)
+            patience -= 1
+
+        if patience == 0:
+            break
+    
 
     print(f'best epoch {best_epoch}')
     print('LoRA training finished')
@@ -281,9 +328,10 @@ def training(config: dict, base_dir: str, device: str):
     save_lora_weight(best_model_state, f'{base_dir}/{config["style"]}_lora_weight.pt')
 
     # plot losses
+    range_epochs = range(1, epochs + 1)
     plt.figure(figsize=(10, 5))
-    plt.plot(losses, label='Training Loss')
-    plt.plot(val_losses, label='Validation Loss')
+    plt.plot(range_epochs, losses, '-b', label='Training Loss')
+    plt.plot(range_epochs, val_losses, '-r', label='Validation Loss')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
     plt.title('Training and Validation Loss')
@@ -335,74 +383,91 @@ def inference(config: dict, base_dir: str, device: str):
     ).images[0]
     image.save(f'{base_dir}/lora.png')
 
+def precompute(config: dict, base_dir: str, device: str):
+    # load model
+    vae = AutoencoderKL.from_pretrained(
+        config['model_name'],
+        subfolder='vae',
+        variant='fp16',
+        torch_dtype=torch.float16,
+    ).to(device)
+    vae.requires_grad_(False)
 
-def data_preparation(config: dict, base_dir: str):
-    # declare paths
-    image_data = f'./{base_dir}/{config["dataset"]}'
-    csv = f'./{base_dir}/{config["dataset"]}_label.csv'
-    tar_archive = f'{base_dir}/{config["style"]}_dataset.tar'
+    # transformation
+    image_transforms = transforms.Compose(
+        [
+            transforms.Resize((512, 512)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+        ]
+    )
 
-    # read csv
-    labels = pd.read_csv(csv, sep='\t')
-    labels.columns = labels.columns.str.strip()
+    # data path
+    shards_dir = f'./data/{config["dataset"]}_precomputed'
+    if not os.path.isdir(shards_dir):
+        os.mkdir(shards_dir)
 
-    # counter
-    total_samples = 0
+    #subsets = ['train', 'val', 'test']
+    subsets = ['train']
+    split_path = f'./data/{config["dataset"]}_split'
 
-    with tarfile.open(tar_archive, 'w') as tar:
-        for _, row in labels.iterrows():
-            image_id = row['ID']
-            author = row['AUTHOR']
-            title = row['TITLE']
-            date = row['DATE']
+    for subset in subsets:
+        subset_dir = os.path.join(split_path, subset)
 
-            # Delete everything drom date thats not a number
-            date_numbers = re.sub(r'\D', '', date)
-            if not date_numbers:
-                # skip rows without numbers
-                print(f'Skipping row with invalid date: {date}')
-                continue
+        # create split folder
+        precomputed_subset_dir = shards_dir + f'/{subset}'
+        if not os.path.isdir(precomputed_subset_dir):
+            os.mkdir(precomputed_subset_dir)
 
-            # filter art epochs by numbers of date: everything <1490 -> middleage everything >= 1490 & <=1600 -> renaissance everything>=1600 & <=1720 -> baroque
-            if (
-                config['start_date_epoch']
-                <= int(date_numbers)
-                <= config['end_date_epoch']
-            ):
-                image_path = os.path.join(image_data, f'{image_id}.jpg')
+        for art_epoch in os.listdir(subset_dir):
+            art_epoch_path = os.path.join(subset_dir, art_epoch)
 
-                if os.path.exists(image_path):
-                    tar.add(image_path, arcname=f'{image_id}.jpg')
+            # create art epoch folder
+            precomputed_subset_epoch_dir = (
+                precomputed_subset_dir + f'/{art_epoch.lower()}'
+            )
+            if not os.path.isdir(precomputed_subset_epoch_dir):
+                os.mkdir(precomputed_subset_epoch_dir)
 
-                    metadata = {
-                        'painting_name': title,
-                        'author_name': author,
-                        'time': row.get('TIMELINE', 'Unknown'),
-                        'date': row.get('DATE', 'Unknown'),
-                        'location': row.get('LOCATION', 'Unknown'),
+            # wds writer for each epoch
+            writer = wds.ShardWriter(
+                os.path.join(precomputed_subset_epoch_dir, 'data-%06d.tar'),
+                maxsize=500 * 1024 * 1024,
+                start_shard=0,
+            )
+
+            for index, img_name in enumerate(tqdm(
+                os.listdir(art_epoch_path), desc=f'Processing images in {art_epoch}'
+            )):
+                if img_name.lower().endswith('.jpg'):
+                    file_path = os.path.join(art_epoch_path, img_name)
+
+                    # open image
+                    image = Image.open(file_path).convert(
+                        'RGB'
+                    )  # Convert to RGB to ensure consistency
+
+                    # transform image
+                    image_tensor = (
+                        image_transforms(image)
+                        .unsqueeze(0)
+                        .to(device, dtype=torch.float16)
+                    )
+
+                    # forward pass of vae
+                    with torch.no_grad():
+                        latents = (
+                            vae.encode(image_tensor).latent_dist.sample() * 0.18215
+                        )
+
+                    writer_dict = {
+                        '__key__': f'{index}_{art_epoch}',
+                        'latents.npy': latents.detach().cpu().numpy(),
                     }
-                    json_data = json.dumps(metadata)
-                    json_bytes = json_data.encode('utf-8')
 
-                    json_info = tarfile.TarInfo(name=f'{image_id}.json')
-                    json_info.size = len(json_bytes)
-                    tar.addfile(json_info, io.BytesIO(json_bytes))
+                    writer.write(writer_dict)
 
-                    total_samples += 1
-
-                else:
-                    print(f'Image {image_path} not found')
-
-        total_metadata = {'total_samples': total_samples}
-        total_metadata_json = json.dumps(total_metadata)
-        total_metadata_bytes = total_metadata_json.encode('utf-8')
-
-        total_metadata_info = tarfile.TarInfo(name='total_metadata.json')
-        total_metadata_info.size = len(total_metadata_bytes)
-        tar.addfile(total_metadata_info, io.BytesIO(total_metadata_bytes))
-
-        print(f'total length: {total_samples}')
-        print(f'Tar archive created: {tar_archive}')
+            writer.close()
 
 
 def main(args):
@@ -415,8 +480,8 @@ def main(args):
     elif args.task == 'inference':
         inference(config, base_dir, device)
 
-    elif args.task == 'data_preparation':
-        data_preparation(config, base_dir)
+    elif args.task == 'precompute':
+        precompute(config, base_dir, device)
 
 
 if __name__ == '__main__':
@@ -434,8 +499,8 @@ if __name__ == '__main__':
         'inference', help='Inference of the fine-tuned diffusion model'
     )
 
-    data_preparation_parser = subparsers.add_parser(
-        'data_preparation', help='prepares the data'
+    precomputed_parser = subparsers.add_parser(
+        'precompute', help='precomputed the data'
     )
 
     args = parser.parse_args()
