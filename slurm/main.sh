@@ -3,7 +3,7 @@
 #SBATCH --job-name=diffusion
 #SBATCH -p NvidiaAll
 #SBATCH --mem=8G
-#SBATCH --output=nvidia.out
+
 
 TASK=$1
 
