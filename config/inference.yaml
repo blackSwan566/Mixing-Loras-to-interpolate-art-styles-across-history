@@ -1,8 +1,8 @@
-version: 2
+version: 3
 model_name: 'CompVis/stable-diffusion-v1-4'
 style: 'early_renaissance'
-data_path: 'src/data/training/early_renaissance/run2_2024-12-16T19:47:46_163e34b57e2bbe9b40c561356a5537f1e2808086/early_renaissance_lora_weight.pt'
-prompt: 'A painting in early renaissance style'
+data_path: 'src/data/training/early_renaissance/run6_2024-12-19T11:27:06_58c35eeb8b68b1c6e878339ee1df2393ca62626a/early_renaissance_lora_weight.pt'
+prompt: 'A painting of the city munich in early renaissance style'
 num_inference_steps: 50
 guidance_scale: 7
 r: 16
