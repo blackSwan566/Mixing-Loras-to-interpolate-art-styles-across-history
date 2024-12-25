@@ -1,0 +1,16 @@
+
+general_model_name: 'CompVis/stable-diffusion-v1-4'
+
+adapter_name_A: 'abstract_expressionism'
+adapter_name_B: 'early_renaissance'
+
+weight_name_A: 'abstract_expressionism.pt'
+weight_name_B: 'early_renaissance'
+
+weight_path_A: 'src/data/training/abstract_expressionism/run6_2024-12-19T19:02:27_58c35eeb8b68b1c6e878339ee1df2393ca62626a/abstract_expressionism_lora_weight.pt'
+weight_path_B: 'src/data/training/early_renaissance/run6_2024-12-19T11:27:06_58c35eeb8b68b1c6e878339ee1df2393ca62626a/early_renaissance_lora_weight.pt'
+
+art_model_name_A: 'src/data/training/abstract_expressionism'
+art_model_name_B: 'src/data/training/early_renaissance'
+
+prompt: 'A boy that fishs by the sea'
