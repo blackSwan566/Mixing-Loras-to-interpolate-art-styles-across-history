@@ -19,8 +19,8 @@ def load_config(task: str) -> Tuple[dict, str]:
     with open(file, 'r') as f:
         config = yaml.safe_load(f)
 
-    if task == 'data_preparation':
-        dir_path = f'./data/{config["dataset"]}'
+    if task == 'precompute' or task == 'prepare_classification' or task == 'mean_std':
+        dir_path = f'./src/data/{task}'
 
         return config, dir_path
 
@@ -32,7 +32,11 @@ def load_config(task: str) -> Tuple[dict, str]:
 
         dir_path = './src/data/'
 
-        task_path = dir_path + task + '/' + config['style']
+        if 'style' in config:
+            task_path = dir_path + task + '/' + config['style']
+
+        else:
+            task_path = dir_path + task
 
         if not os.path.exists(task_path):
             os.makedirs(task_path)
