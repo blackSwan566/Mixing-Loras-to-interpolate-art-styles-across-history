@@ -1,0 +1,2 @@
+dataset: 'wikiart'
+batch_size: 32

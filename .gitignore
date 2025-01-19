@@ -7,3 +7,4 @@ src/scripts/__pycache__
 *.out
 /slurm/main_abaki.sh
 /data
+/images
