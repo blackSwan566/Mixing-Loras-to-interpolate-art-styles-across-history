@@ -1,6 +1,7 @@
 src/data
 src/__pycache__
 src/utils/__pycache__
+src/scripts/__pycache__
 *.xml
 /.idea
 *.out
