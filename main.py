@@ -6,7 +6,6 @@ from src.scripts.create_webdatasets import precompute_data
 from src.scripts.merge_loras_v1 import merge_loras_v1
 from src.scripts.merge_loras_v2 import merge_loras_v2
 from src.scripts.merge_loras_v3 import merge_loras_v3
-from src.scripts.merge_loras_v4 import merge_loras_v4
 import torch
 
 
