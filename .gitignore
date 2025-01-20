@@ -8,4 +8,4 @@ src/utils/__pycache__
 /data
 venv
 /Analysis
-
+src/scripts/__pycache__
