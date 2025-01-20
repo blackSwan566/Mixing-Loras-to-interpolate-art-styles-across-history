@@ -25,10 +25,14 @@ def load_config(task: str) -> Tuple[dict, str]:
         return config, dir_path
 
     elif 'merge' in task:
-        dir_path = f'./src/data/{task}/{config["style"]}'
+        dir_path = f'./src/data/{task}/seed{config["seed"]}/{config["style"]}'
 
+        # create folder if not exist
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
+
+        # copy config into the folder
+        shutil.copy(file, dir_path)
 
         return config, dir_path
 
