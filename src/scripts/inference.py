@@ -25,7 +25,7 @@ def main(config):
 
     patch_pipe(
         pipe,
-        f'{base_path}/{config["style"]}/{config["version"]}/lora_weight.pt',
+        config['data_path'],
         patch_unet=True,
         patch_text=False,
         patch_ti=False,

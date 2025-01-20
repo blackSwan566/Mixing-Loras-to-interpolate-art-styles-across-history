@@ -6,7 +6,6 @@ from src.scripts.create_webdatasets import precompute_data
 from src.scripts.merge_loras_v1 import merge_loras_v1
 from src.scripts.merge_loras_v2 import merge_loras_v2
 from src.scripts.merge_loras_v3 import merge_loras_v3
-from src.scripts.merge_loras_v4 import merge_loras_v4
 import torch
 
 
@@ -65,10 +64,6 @@ if __name__ == '__main__':
 
     merge_loras_v3_parser = subparsers.add_parser(
         'merge_loras_v3', help='merge two loras v3'
-    )
-
-    merge_loras_v4_parser = subparsers.add_parser(
-        'merge_loras_v4', help='merge two loras v4'
     )
 
     args = parser.parse_args()
