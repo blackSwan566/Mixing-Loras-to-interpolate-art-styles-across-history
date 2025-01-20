@@ -16,3 +16,4 @@ guidance_scale: 7
 prompt: "A woman crying in the snow, expressionism, renaissance, pop art."
 style: 'popart_renai_espress'
 
+seed: 38
