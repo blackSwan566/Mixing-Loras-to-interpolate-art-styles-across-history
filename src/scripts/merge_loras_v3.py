@@ -6,8 +6,6 @@ from diffusers import (
 
 
 def merge_loras_v3(config: dict, base_dir: str, device: str):
-    torch.seed(config['seed'])
-
     # Load weights from .pt
     lora1 = torch.load(config['w1'])
     lora2 = torch.load(config['w2'])
@@ -41,6 +39,7 @@ def merge_loras_v3(config: dict, base_dir: str, device: str):
 
     prompt = config['prompt']
 
+    torch.manual_seed(config['seed'])
     image = pipe(
         prompt,
         num_inference_steps=config['num_inference_steps'],
@@ -54,6 +53,7 @@ def merge_loras_v3(config: dict, base_dir: str, device: str):
     # influence of lora on model
     tune_lora_scale(pipe.unet, 0.7)
 
+    torch.manual_seed(config['seed'])
     image = pipe(
         config['prompt'],
         num_inference_steps=config['num_inference_steps'],
