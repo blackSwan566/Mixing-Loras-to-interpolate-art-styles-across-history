@@ -1,0 +1,11 @@
+src/data
+src/__pycache__
+src/utils/__pycache__
+*.xml
+/.idea
+*.out
+/slurm/main_abaki.sh
+/data
+venv
+/Analysis
+
