@@ -1,0 +1,8 @@
+version: 20
+model_name: 'CompVis/stable-diffusion-v1-4'
+style: 'expressionism'
+data_path: 'src/data/training/expressionism/run6_2024-12-19T15:59:50_58c35eeb8b68b1c6e878339ee1df2393ca62626a/expressionism_lora_weight.pt'
+prompt: 'A family eats meat for dinner every one seems to be depressed'
+num_inference_steps: 50
+guidance_scale: 7
+r: 16
