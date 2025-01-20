@@ -3,7 +3,6 @@ from diffusers import StableDiffusionPipeline
 from lora_diffusion import tune_lora_scale, monkeypatch_add_lora
 
 
-
 def inference_lora(config: dict, base_dir: str, device: str):
     """
     inference the trained LoRA weights

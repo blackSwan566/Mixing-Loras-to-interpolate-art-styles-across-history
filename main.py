@@ -22,21 +22,18 @@ def main(args):
 
     elif args.task == 'precompute':
         precompute_data(config, device)
-    
+
     elif args.task == 'merge_loras_v1':
         merge_loras_v1(config, base_dir, device)
-        
+
     elif args.task == 'merge_loras_v2':
         merge_loras_v2(config, base_dir, device)
-        
+
     elif args.task == 'merge_loras_v3':
         merge_loras_v3(config, base_dir, device)
-        
+
     elif args.task == 'merge_loras_v4':
         merge_loras_v3(config, base_dir, device)
-
-
-
 
 
 if __name__ == '__main__':
@@ -57,23 +54,22 @@ if __name__ == '__main__':
     precomputed_parser = subparsers.add_parser(
         'precompute', help='precomputed the data'
     )
-    
+
     merge_loras_v1_parser = subparsers.add_parser(
         'merge_loras_v1', help='merge two loras v1'
     )
-    
+
     merge_loras_v2_parser = subparsers.add_parser(
         'merge_loras_v2', help='merge two loras v2'
     )
-    
+
     merge_loras_v3_parser = subparsers.add_parser(
         'merge_loras_v3', help='merge two loras v3'
     )
-    
+
     merge_loras_v4_parser = subparsers.add_parser(
         'merge_loras_v4', help='merge two loras v4'
     )
-
 
     args = parser.parse_args()
     main(args)
