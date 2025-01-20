@@ -1,5 +1,8 @@
 import torch
-from lora_diffusion import monkeypatch_add_lora, tune_lora_scale
+from lora_diffusion import (
+    tune_lora_scale,
+    monkeypatch_or_replace_lora,
+)
 from diffusers import (
     StableDiffusionPipeline,
 )
@@ -11,9 +14,14 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
     lora1 = torch.load(config['w1'])
     lora2 = torch.load(config['w2'])
 
-    # list to dictonary
-    wd1 = {f"{'up' if i % 2 == 0 else 'down'}_{i // 2}": tensor for i, tensor in enumerate(lora1)}
-    wd2 = {f"{'up' if i % 2 == 0 else 'down'}_{i // 2}": tensor for i, tensor in enumerate(lora2)}
+    # assign key to lora weights
+    wd1 = {
+        f"{'up' if i % 2==0 else 'down'}_{i}": tensor for i, tensor in enumerate(lora1)
+    }
+    wd2 = {
+        f"{'up' if i % 2 == 0 else 'down'}_{i}": tensor
+        for i, tensor in enumerate(lora2)
+    }
 
     alpha1 = config['blending_alpha1']
     alpha2 = config['blending_alpha2']
@@ -27,37 +35,38 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
         else:
             merged_lora[key] = wd1[key]
 
-    unet_weights = {k: v for k, v in merged_lora.items() if 'unet' in k}
+    # convert dict to lilst
+    list_lora = list(merged_lora.values())
 
     # load pipe
     pipe = StableDiffusionPipeline.from_pretrained(
         config['general_model_name'],
         torch_dtype=torch.float16,
     ).to(device)
+    pipe.safety_checker = None
 
     prompt = config['prompt']
 
+    # synthesize without lora weights
     torch.manual_seed(config['seed'])
-    
     image = pipe(
         prompt,
         num_inference_steps=config['num_inference_steps'],
         guidance_scale=config['guidance_scale'],
     ).images[0]
-    image.save(f'{base_dir}/no_lora.png')
+    image.save(f'{base_dir}/no_lora_{prompt}.png')
 
-    # add lora to pipe
-    monkeypatch_add_lora(pipe.unet, unet_weights, alpha=0.7)
+    # add fused lora
+    monkeypatch_or_replace_lora(pipe.unet, list_lora, r=config['r'])
+    tune_lora_scale(pipe.unet, config['tune_scale'])
 
-    # influence of lora on model
-    tune_lora_scale(pipe.unet, 0.7)
-
+    # synthesize with merged lora weights
     torch.manual_seed(config['seed'])
     image = pipe(
-        config['prompt'],
+        prompt,
         num_inference_steps=config['num_inference_steps'],
         guidance_scale=config['guidance_scale'],
     ).images[0]
     image.save(
-        f'{base_dir}/{config["adapter_weights_a1"]}_{config["adapter_weights_a2"]}_{prompt}.png'
+        f'{base_dir}/{config["blending_alpha1"]}_{config["blending_alpha2"]}_{prompt}.png'
     )

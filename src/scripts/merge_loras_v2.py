@@ -36,6 +36,9 @@ def merge_loras_v3(config: dict, base_dir: str, device: str):
         config['general_model_name'],
         torch_dtype=torch.float16,
     ).to(device)
+    pipe.safety_checker = None
+
+    prompt = config['prompt']
 
     prompt = config['prompt']
 
@@ -45,7 +48,7 @@ def merge_loras_v3(config: dict, base_dir: str, device: str):
         num_inference_steps=config['num_inference_steps'],
         guidance_scale=config['guidance_scale'],
     ).images[0]
-    image.save(f'{base_dir}/no_lora.png')
+    image.save(f'{base_dir}/no_lora_{prompt}.png')
 
     # add lora to pipe
     monkeypatch_add_lora(pipe.unet, unet_weights, alpha=0.7)
@@ -55,7 +58,7 @@ def merge_loras_v3(config: dict, base_dir: str, device: str):
 
     torch.manual_seed(config['seed'])
     image = pipe(
-        config['prompt'],
+        prompt,
         num_inference_steps=config['num_inference_steps'],
         guidance_scale=config['guidance_scale'],
     ).images[0]

@@ -11,7 +11,6 @@ def inference_lora(config: dict, base_dir: str, device: str):
     :param base_dir: where to save the generated images
     :param device: whether we train on cpu or gpu
     """
-    torch.manual_seed(42)
 
     # load diffusion model
     pipe = StableDiffusionPipeline.from_pretrained(
@@ -25,6 +24,7 @@ def inference_lora(config: dict, base_dir: str, device: str):
     pipe.vae = torch.compile(pipe.vae)
 
     # create image without LoRA
+    torch.manual_seed(42)
     image = pipe(
         config['prompt'],
         num_inference_steps=config['num_inference_steps'],
@@ -44,6 +44,7 @@ def inference_lora(config: dict, base_dir: str, device: str):
     tune_lora_scale(pipe.unet, 1.00)
 
     # create image with LoRA
+    torch.manual_seed(42)
     image = pipe(
         config['prompt'],
         num_inference_steps=config['num_inference_steps'],
