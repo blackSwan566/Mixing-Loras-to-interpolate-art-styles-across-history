@@ -30,10 +30,7 @@ def main(args):
 
     elif args.task == 'merge_loras_v3':
         merge_loras_v3(config, base_dir, device)
-
-    elif args.task == 'merge_loras_v4':
-        merge_loras_v3(config, base_dir, device)
-
+        
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Fine Tune diffusion model')
@@ -65,10 +62,5 @@ if __name__ == '__main__':
     merge_loras_v3_parser = subparsers.add_parser(
         'merge_loras_v3', help='merge two loras v3'
     )
-
-    merge_loras_v4_parser = subparsers.add_parser(
-        'merge_loras_v4', help='merge two loras v4'
-    )
-
     args = parser.parse_args()
     main(args)
