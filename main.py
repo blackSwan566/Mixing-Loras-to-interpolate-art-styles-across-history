@@ -60,7 +60,7 @@ if __name__ == '__main__':
     )
 
     merge_loras_v3_parser = subparsers.add_parser(
-        'merge_loras_v3', help='merge two loras v3'
+        'merge_loras_v3', help='merge three loras v3'
     )
 
     args = parser.parse_args()

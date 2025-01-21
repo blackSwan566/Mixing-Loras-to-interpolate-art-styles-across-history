@@ -4,16 +4,19 @@ from diffusers import (
     StableDiffusionPipeline,
 )
 
-
-# Linear
+    # Linear
 def merge_loras_v1(config: dict, base_dir: str, device: str):
     # Load weights from .pt
     lora1 = torch.load(config['w1'])
     lora2 = torch.load(config['w2'])
 
-    # list to dictonary
-    wd1 = {f'tensor_{i}': tensor for i, tensor in enumerate(lora1)}
-    wd2 = {f'tensor_{i}': tensor for i, tensor in enumerate(lora2)}
+    # or test i//2
+    wd1 = {f"{'up' if i % 2==0 else 'down'}_{i}": tensor for i, tensor in enumerate(lora1)}
+    wd2 = {f"{'up' if i % 2 == 0 else 'down'}_{i}": tensor for i, tensor in enumerate(lora2)}
+    
+    #wd1 = {f"{'tensor'}_{i}": tensor for i, tensor in enumerate(lora1)}
+    #wd2 = {f"{'tensor'}_{i}": tensor for i, tensor in enumerate(lora2)}
+
 
     alpha1 = config['blending_alpha1']
     alpha2 = config['blending_alpha2']
@@ -30,6 +33,7 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
 
     unet_weights = {k: v for k, v in merged_lora.items() if 'unet' in k}
     text_encoder_weights = {k: v for k, v in merged_lora.items() if "text_encoder" in k}
+    
     print(merged_lora)
     print('--------')
     print(merged_lora.keys())
@@ -54,9 +58,10 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
     # add lora to pipe
     # monkeypatch_add_lora(pipe.unet, unet_weights, alpha=0.7)
     # monkeypatch_add_lora(pipe.text_encoder, text_encoder_weights, alpha=0.7)
-    # monkeypatch_or_replace_lora(pipe.unet, unet_weights, r=16)
-
-    monkeypatch_or_replace_lora(pipe.unet, lora1)
+    
+    monkeypatch_or_replace_lora(pipe.unet, unet_weights, r=16)
+    #monkeypatch_or_replace_lora(pipe.unet, merged_lora)
+    
     tune_lora_scale(pipe.unet, 0.7)
     torch.manual_seed(config['seed'])
     image = pipe(
@@ -64,17 +69,18 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
         num_inference_steps=config['num_inference_steps'],
         guidance_scale=config['guidance_scale'],
     ).images[0]    
-    image.save(f'{base_dir}/first_lora.png')
-
-    monkeypatch_add_lora(pipe.unet, lora2, alpha=1, beta=1)
-    tune_lora_scale(pipe.unet, 0.7)
-    torch.manual_seed(config['seed'])
-    image = pipe(
-        prompt,
-        num_inference_steps=config['num_inference_steps'],
-        guidance_scale=config['guidance_scale'],
-    ).images[0]    
-    image.save(f'{base_dir}/second_lora.png')
+    image.save(
+         f'{base_dir}/{config["blending_alpha1"]}_{config["blending_alpha2"]}_{prompt}.png'
+    )
+    # monkeypatch_add_lora(pipe.unet, lora2, alpha=1, beta=1)
+    # tune_lora_scale(pipe.unet, 0.7)
+    # torch.manual_seed(config['seed'])
+    # image = pipe(
+    #     prompt,
+    #     num_inference_steps=config['num_inference_steps'],
+    #     guidance_scale=config['guidance_scale'],
+    # ).images[0]    
+    # image.save(f'{base_dir}/second_lora.png')
 
 
     # influence of lora on model
@@ -99,3 +105,5 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
 # )
 # pipeline.load_lora_weights("nerijs/pixel-art-xl", weight_name="pixel-art-xl.safetensors", adapter_name="pixel")
 # pipeline.set_adapters(["cinematic", "pixel"], adapter_weights=[0.5, 0.5])
+
+
