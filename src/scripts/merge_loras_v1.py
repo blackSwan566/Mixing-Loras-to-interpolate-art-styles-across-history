@@ -59,8 +59,8 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
     # monkeypatch_add_lora(pipe.unet, unet_weights, alpha=0.7)
     # monkeypatch_add_lora(pipe.text_encoder, text_encoder_weights, alpha=0.7)
     
-    monkeypatch_or_replace_lora(pipe.unet, unet_weights, r=16)
-    #monkeypatch_or_replace_lora(pipe.unet, merged_lora)
+    #monkeypatch_or_replace_lora(pipe.unet, unet_weights, r=16)
+    monkeypatch_or_replace_lora(pipe.unet, merged_lora)
     
     tune_lora_scale(pipe.unet, 0.7)
     torch.manual_seed(config['seed'])
