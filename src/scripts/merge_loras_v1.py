@@ -12,8 +12,8 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
     lora2 = torch.load(config['w2'])
 
     # list to dictonary
-    wd1 = {f'tensor_{i}': tensor for i, tensor in enumerate(lora1)}
-    wd2 = {f'tensor_{i}': tensor for i, tensor in enumerate(lora2)}
+    wd1 = {f"{'up' if i % 2 == 0 else 'down'}_{i // 2}": tensor for i, tensor in enumerate(lora1)}
+    wd2 = {f"{'up' if i % 2 == 0 else 'down'}_{i // 2}": tensor for i, tensor in enumerate(lora2)}
 
     alpha1 = config['blending_alpha1']
     alpha2 = config['blending_alpha2']
@@ -38,6 +38,7 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
     prompt = config['prompt']
 
     torch.manual_seed(config['seed'])
+    
     image = pipe(
         prompt,
         num_inference_steps=config['num_inference_steps'],
