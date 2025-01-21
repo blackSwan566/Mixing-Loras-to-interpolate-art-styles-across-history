@@ -3,6 +3,9 @@ from src.utils.functions import load_config
 from src.scripts.lora_fine_tune import training_lora
 from src.scripts.lora_inference import inference_lora
 from src.scripts.create_webdatasets import precompute_data
+from src.scripts.merge_loras_v1 import merge_loras_v1
+from src.scripts.merge_loras_v2 import merge_loras_v2
+from src.scripts.merge_loras_v2 import merge_loras_v3
 import torch
 
 
@@ -18,6 +21,13 @@ def main(args):
 
     elif args.task == 'precompute':
         precompute_data(config, device)
+
+    elif args.task == 'merge_loras_v1':
+        merge_loras_v1(config, base_dir, device)
+
+    elif args.task == 'merge_loras_v2':
+        merge_loras_v2(config, base_dir, device)
+
 
 
 if __name__ == '__main__':
@@ -38,6 +48,15 @@ if __name__ == '__main__':
     precomputed_parser = subparsers.add_parser(
         'precompute', help='precomputed the data'
     )
+
+    merge_loras_v1_parser = subparsers.add_parser(
+        'merge_loras_v1', help='merge two loras v1'
+    )
+
+    merge_loras_v2_parser = subparsers.add_parser(
+        'merge_loras_v2', help='merge two loras v2'
+    )
+
 
     args = parser.parse_args()
     main(args)
