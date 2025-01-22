@@ -76,6 +76,8 @@ if __name__ == '__main__':
 
     mean_std_parser = subparsers.add_parser(
         'mean_std', help='calculates the mean and std for a given dataset'
+        )
+    
     merge_loras_v1_parser = subparsers.add_parser(
         'merge_loras_v1', help='merge two loras v1'
     )
