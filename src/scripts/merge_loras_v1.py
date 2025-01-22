@@ -58,6 +58,8 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
 
     # add fused lora
     monkeypatch_or_replace_lora(pipe.unet, list_lora, r=config['r'])
+    
+    # influence of lora on model
     tune_lora_scale(pipe.unet, config['tune_scale'])
 
     # synthesize with merged lora weights

@@ -1,5 +1,5 @@
 import torch
-from lora_diffusion import monkeypatch_add_lora, tune_lora_scale
+from lora_diffusion import monkeypatch_or_replace_lora, tune_lora_scale
 from diffusers import (
     StableDiffusionPipeline,
 )
@@ -29,7 +29,8 @@ def merge_loras_v3(config: dict, base_dir: str, device: str):
         else:
             merged_lora[key] = wd1[key]
 
-    unet_weights = {k: v for k, v in merged_lora.items() if 'unet' in k}
+    # convert dict to lilst
+    list_lora = list(merged_lora.values())
 
     # load pipe
     pipe = StableDiffusionPipeline.from_pretrained(
@@ -40,8 +41,7 @@ def merge_loras_v3(config: dict, base_dir: str, device: str):
 
     prompt = config['prompt']
 
-    prompt = config['prompt']
-
+    # synthesize without lora weights
     torch.manual_seed(config['seed'])
     image = pipe(
         prompt,
@@ -51,11 +51,12 @@ def merge_loras_v3(config: dict, base_dir: str, device: str):
     image.save(f'{base_dir}/no_lora_{prompt}.png')
 
     # add lora to pipe
-    monkeypatch_add_lora(pipe.unet, unet_weights, alpha=0.7)
+    monkeypatch_or_replace_lora(pipe.unet, list_lora, r=config['r'])
 
     # influence of lora on model
-    tune_lora_scale(pipe.unet, 0.7)
+    tune_lora_scale(pipe.unet, config['tune_scale'])
 
+    # synthesize with merged lora weights
     torch.manual_seed(config['seed'])
     image = pipe(
         prompt,
