@@ -2,6 +2,9 @@
 version: 2
 general_model_name: 'CompVis/stable-diffusion-v1-4'
 
+style: 'early_renaissance-pop_art-expressionism'
+
+
 w1: './src/data/training/early_renaissance/run6_2024-12-19T11:27:06_58c35eeb8b68b1c6e878339ee1df2393ca62626a/early_renaissance_lora_weight.pt'
 w2: './src/data/training/expressionism/run6_2024-12-19T15:59:50_58c35eeb8b68b1c6e878339ee1df2393ca62626a/expressionism_lora_weight.pt'
 w3: './src/data/training/pop_art/run6_2024-12-19T11:26:12_58c35eeb8b68b1c6e878339ee1df2393ca62626a/pop_art_lora_weight.pt'
@@ -12,8 +15,8 @@ blending_alpha3: 0.5
 
 num_inference_steps: 30
 guidance_scale: 7
+r: 16
+tune_scale: 0.7
+seed: 38
 
 prompt: "A woman crying in the snow, expressionism, renaissance, pop art."
-style: 'early_renaissance-pop_art-expressionism'
-
-seed: 38

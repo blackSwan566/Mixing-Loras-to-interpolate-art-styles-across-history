@@ -12,11 +12,13 @@ style: 'early_renaissance-pop_art'
 w1: './src/data/training/early_renaissance/run6_2024-12-19T11:27:06_58c35eeb8b68b1c6e878339ee1df2393ca62626a/early_renaissance_lora_weight.pt'
 w2: './src/data/training/pop_art/run6_2024-12-19T11:26:12_58c35eeb8b68b1c6e878339ee1df2393ca62626a/pop_art_lora_weight.pt'
 
-blending_alpha1: 0.2
-blending_alpha2: 0.8
+blending_alpha1: 0.8
+blending_alpha2: 0.2
 
 num_inference_steps: 30
 guidance_scale: 7
+r: 16
+tune_scale: 0.7
 seed: 29
 
 prompt: "A painting of a woman in Style1 and Style2"
