@@ -30,7 +30,7 @@ def main(args):
 
     elif args.task == 'merge_loras_v3':
         merge_loras_v3(config, base_dir, device)
-        
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Fine Tune diffusion model')
