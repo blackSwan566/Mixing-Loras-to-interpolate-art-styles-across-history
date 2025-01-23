@@ -5,7 +5,7 @@ from diffusers import (
 )
 
 
-def merge_loras_v3(config: dict, base_dir: str, device: str):
+def merge_loras_v2(config: dict, base_dir: str, device: str):
     # Load weights from .pt
     lora1 = torch.load(config['w1'])
     lora2 = torch.load(config['w2'])
