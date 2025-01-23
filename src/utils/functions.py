@@ -25,7 +25,7 @@ def load_config(task: str) -> Tuple[dict, str]:
         return config, dir_path
 
     elif 'merge' in task:
-        dir_path = f'./src/data/{task}/run{config["version"]}/{config["style"]}'
+        dir_path = f'./src/data/{task}/run{config["version"]}/{config["style"]}/{config["prompt"]}'
 
         # create folder if not exist
         if not os.path.exists(dir_path):
