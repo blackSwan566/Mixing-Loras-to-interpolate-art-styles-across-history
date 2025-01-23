@@ -4,7 +4,7 @@
 #- pop_art = Style2
 #- early_renaissance = Style1
 
-version: 2
+version: 1
 general_model_name: 'CompVis/stable-diffusion-v1-4'
 
 style: 'early_renaissance-pop_art'
@@ -12,13 +12,15 @@ style: 'early_renaissance-pop_art'
 w1: './src/data/training/early_renaissance/run6_2024-12-19T11:27:06_58c35eeb8b68b1c6e878339ee1df2393ca62626a/early_renaissance_lora_weight.pt'
 w2: './src/data/training/pop_art/run6_2024-12-19T11:26:12_58c35eeb8b68b1c6e878339ee1df2393ca62626a/pop_art_lora_weight.pt'
 
-blending_alpha1: 0.1
-blending_alpha2: 0.9
 
-num_inference_steps: 30
+full_alpha: false
+blending_alpha1: 0.8
+blending_alpha2: 0.2
+
+num_inference_steps: 50
 guidance_scale: 7
 r: 16
-tune_scale: 0.7
-seed: 29
+tune_scale: 1
+seed: 77
 
-prompt: "A painting of a woman in Style1 and Style2"
+prompt: "A painting of aliens arriving in a multicolor sail ship in Style1 and Style2"
