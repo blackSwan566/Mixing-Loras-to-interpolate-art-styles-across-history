@@ -25,10 +25,11 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
     
     if config['full_alpha']:
         steps = [0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0]
+        inversed_steps = [1.0, 0.8, 0.6, 0.5, 0.2, 0.0]
 
-        for step in steps:
+        for step, inversed_steps in zip(steps, inversed_steps):
             alpha1 = step
-            alpha2 = 1 - step
+            alpha2 = inversed_steps
 
             generate_image(config, base_dir, alpha1, alpha2, device, wd1, wd2)
 
