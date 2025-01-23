@@ -25,7 +25,7 @@ def merge_loras_v1(config: dict, base_dir: str, device: str):
     
     if config['full_alpha']:
         steps = [0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0]
-        inversed_steps = [1.0, 0.8, 0.6, 0.5, 0.2, 0.0]
+        inversed_steps = [1.0, 0.8, 0.6, 0.5, 0.4, 0.2, 0.0]
 
         for step, inversed_steps in zip(steps, inversed_steps):
             alpha1 = step
