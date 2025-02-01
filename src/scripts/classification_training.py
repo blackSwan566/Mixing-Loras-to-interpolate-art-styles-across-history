@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 from copy import deepcopy
 
 
-
 def train_style_classification(config: dict, base_dir: str, device: str):
     # load labels
     with open(
@@ -33,38 +32,64 @@ def train_style_classification(config: dict, base_dir: str, device: str):
         model.fc = nn.Linear(last_dim, len(label_encoder.classes_))
         model = model.to(device)
 
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(degrees=15),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-    ])
+    train_transform = transforms.Compose(
+        [
+            transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(degrees=15),
+            transforms.ColorJitter(
+                brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1
+            ),
+        ]
+    )
 
-    val_transform = transforms.Compose([
-        transforms.Resize(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5537, 0.4837, 0.4230], std=[1346.6721, 1176.6603, 1029.2145])
-    ])
+    val_transform = transforms.Compose(
+        [
+            transforms.Resize(224),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.5537, 0.4837, 0.4230], std=[1346.6721, 1176.6603, 1029.2145]
+            ),
+        ]
+    )
 
     def process_train_sample(sample):
         if config['model'] == 'vit':
             sample['image.jpg'] = train_transform(sample['image.jpg'])
-            inputs = processor(sample['image.jpg'], return_tensors='pt', do_resize=True, size=224, do_normalize=True, image_mean=[0.5537, 0.4837, 0.4230], image_std=[1346.6721, 1176.6603, 1029.2145])
+            inputs = processor(
+                sample['image.jpg'],
+                return_tensors='pt',
+                do_resize=True,
+                size=224,
+                do_normalize=True,
+                image_mean=[0.5537, 0.4837, 0.4230],
+                image_std=[1346.6721, 1176.6603, 1029.2145],
+            )
 
         else:
             image = sample['image.jpg']
             image_tensor = train_transform(transforms.ToTensor()(image))
-            normalize = transforms.Normalize(mean=[0.5537, 0.4837, 0.4230], std=[1346.6721, 1176.6603, 1029.2145])
+            normalize = transforms.Normalize(
+                mean=[0.5537, 0.4837, 0.4230], std=[1346.6721, 1176.6603, 1029.2145]
+            )
             image_tensor = normalize(image_tensor)
             inputs = {'pixel_values': image_tensor.unsqueeze(0)}
 
         inputs['labels'] = torch.tensor(int(sample['label.txt']), dtype=torch.long)
 
         return inputs
-    
+
     def process_val_sample(sample):
         if config['model'] == 'vit':
-            inputs = processor(sample['image.jpg'], return_tensors='pt', do_resize=True, size=224, do_normalize=True, image_mean=[0.5537, 0.4837, 0.4230], image_std=[1346.6721, 1176.6603, 1029.2145])
+            inputs = processor(
+                sample['image.jpg'],
+                return_tensors='pt',
+                do_resize=True,
+                size=224,
+                do_normalize=True,
+                image_mean=[0.5537, 0.4837, 0.4230],
+                image_std=[1346.6721, 1176.6603, 1029.2145],
+            )
 
         else:
             image = sample['image.jpg']
@@ -111,11 +136,16 @@ def train_style_classification(config: dict, base_dir: str, device: str):
         .to_tuple('pixel_values', 'labels')
     )
     val_dataloader = DataLoader(
-        val_dataset, batch_size=config['batch_size'], shuffle=False, collate_fn=collate_fn
+        val_dataset,
+        batch_size=config['batch_size'],
+        shuffle=False,
+        collate_fn=collate_fn,
     )
 
     epochs = config['epochs']
-    optimizer = AdamW(model.parameters(), lr=config['lr'], weight_decay=config['weight_decay'])
+    optimizer = AdamW(
+        model.parameters(), lr=config['lr'], weight_decay=config['weight_decay']
+    )
 
     # counter
     len_train_dataloader = 0
@@ -127,7 +157,7 @@ def train_style_classification(config: dict, base_dir: str, device: str):
     train_acc = []
     val_acc = []
 
-    # early stopping 
+    # early stopping
     current_loss = float('inf')
     best_model_state = None
     best_epoch = 1
@@ -146,17 +176,17 @@ def train_style_classification(config: dict, base_dir: str, device: str):
             tqdm(train_dataloader, desc=f'Epoch:[{epoch}|{epochs}]')
         ):
             optimizer.zero_grad()
-            
+
             # load data
             pixel_values = batch['pixel_values'].to(device)
             labels = batch['labels'].to(device)
-            
+
             # forward pass
             if config['model'] == 'vit':
                 outputs = model(pixel_values=pixel_values, labels=labels)
                 loss = outputs.loss
                 logits = outputs.logits
-            
+
             else:
                 outputs = model(pixel_values)
                 loss = loss_fn(outputs, labels)
@@ -172,15 +202,15 @@ def train_style_classification(config: dict, base_dir: str, device: str):
             len_train_dataloader += 1
 
             loss.backward()
-            optimizer.step()     
+            optimizer.step()
 
         avg_loss = running_loss / len_train_dataloader
         train_losses.append(avg_loss)
-        print(f"Epoch: {epoch}, Training Loss: {avg_loss:.4f}")
+        print(f'Epoch: {epoch}, Training Loss: {avg_loss:.4f}')
 
         avg_accuracy = 100 * train_correct / train_total
         train_acc.append(avg_accuracy)
-        print(f"Epoch: {epoch}, Training Acc: {avg_accuracy:.4f}")
+        print(f'Epoch: {epoch}, Training Acc: {avg_accuracy:.4f}')
 
         # val loop
         model.eval()
@@ -189,7 +219,9 @@ def train_style_classification(config: dict, base_dir: str, device: str):
         val_correct = 0
 
         with torch.no_grad():
-            for _, batch in enumerate(tqdm(val_dataloader, desc=f'Epoch:[{epoch}|{epochs}]')):
+            for _, batch in enumerate(
+                tqdm(val_dataloader, desc=f'Epoch:[{epoch}|{epochs}]')
+            ):
                 pixel_values = batch['pixel_values'].to(device)
                 labels = batch['labels'].to(device)
 
@@ -198,7 +230,7 @@ def train_style_classification(config: dict, base_dir: str, device: str):
                     outputs = model(pixel_values=pixel_values, labels=labels)
                     loss = outputs.loss
                     logits = outputs.logits
-                
+
                 else:
                     outputs = model(pixel_values)
                     loss = loss_fn(outputs, labels)
@@ -215,11 +247,11 @@ def train_style_classification(config: dict, base_dir: str, device: str):
 
         avg_val_loss = val_loss / len_val_dataloader
         val_losses.append(avg_val_loss)
-        print(f"Epoch: {epoch}, Validation Loss: {avg_val_loss:.4f}")
+        print(f'Epoch: {epoch}, Validation Loss: {avg_val_loss:.4f}')
 
         avg_val_accuracy = 100 * val_correct / val_total
         val_acc.append(avg_val_accuracy)
-        print(f"Epoch: {epoch}, Validation Acc: {avg_val_accuracy:.4f}")
+        print(f'Epoch: {epoch}, Validation Acc: {avg_val_accuracy:.4f}')
 
         # early stopping check
         if current_loss > avg_val_loss:
@@ -242,10 +274,12 @@ def train_style_classification(config: dict, base_dir: str, device: str):
     # safe model
     if config['model'] == 'vit':
         best_model_state.save_pretrained(f'{base_dir}/classification_weights.pth')
-    
+
     else:
-        torch.save(best_model_state.state_dict(), f'{base_dir}/classification_weights.pth')
-    
+        torch.save(
+            best_model_state.state_dict(), f'{base_dir}/classification_weights.pth'
+        )
+
     # create plot
     range_epochs = range(1, len(train_losses) + 1)
     plt.figure(figsize=(10, 5))
@@ -267,4 +301,3 @@ def train_style_classification(config: dict, base_dir: str, device: str):
     plt.legend()
     plt.grid()
     plt.savefig(f'{base_dir}/accuracy.png')
-

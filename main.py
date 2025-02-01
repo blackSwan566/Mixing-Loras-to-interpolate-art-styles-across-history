@@ -30,7 +30,7 @@ def main(args):
 
     elif args.task == 'classification':
         train_style_classification(config, base_dir, device)
-    
+
     elif args.task == 'classification_inference':
         inference_style_classification(config, base_dir, device)
 
@@ -76,8 +76,8 @@ if __name__ == '__main__':
 
     mean_std_parser = subparsers.add_parser(
         'mean_std', help='calculates the mean and std for a given dataset'
-        )
-    
+    )
+
     merge_loras_v1_parser = subparsers.add_parser(
         'merge_loras_v1', help='merge two loras v1'
     )

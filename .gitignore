@@ -8,3 +8,4 @@ src/scripts/__pycache__
 /slurm/main_abaki.sh
 /data
 /images
+src/plots

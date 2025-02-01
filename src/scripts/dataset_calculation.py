@@ -5,15 +5,17 @@ import torch
 from tqdm import tqdm
 
 
-
 def calculate_mean_and_std(config: dict):
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor()
-    ])
+    transform = transforms.Compose(
+        [transforms.Resize((224, 224)), transforms.ToTensor()]
+    )
 
-    dataset = SingleFolderDatasetForStats(f'./data/{config["dataset"]}_all_images', transform)
-    dataloader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=False, num_workers=4)
+    dataset = SingleFolderDatasetForStats(
+        f'./data/{config["dataset"]}_all_images', transform
+    )
+    dataloader = DataLoader(
+        dataset, batch_size=config['batch_size'], shuffle=False, num_workers=4
+    )
 
     mean = torch.zeros(3)
     std = torch.zeros(3)
@@ -23,7 +25,9 @@ def calculate_mean_and_std(config: dict):
         batch = batch.float()
 
         mean += batch.mean(dim=[0, 2, 3]) * batch.size(0)
-        std += ((batch - mean.view(1, 3, 1, 1)) ** 2).mean(dim=[0, 2, 3]) * batch.size(0)
+        std += ((batch - mean.view(1, 3, 1, 1)) ** 2).mean(dim=[0, 2, 3]) * batch.size(
+            0
+        )
 
         total_pixels += batch.size(0)
 

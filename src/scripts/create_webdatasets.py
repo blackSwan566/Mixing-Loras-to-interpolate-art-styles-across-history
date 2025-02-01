@@ -133,27 +133,30 @@ def prepare_classificaiton(config: dict):
                 class_counts[label] += 1
 
     # downsample
-    smallest_class_size = min(class_counts.values())    
+    smallest_class_size = min(class_counts.values())
     balanced_images_with_labels = []
 
     for label, count in class_counts.items():
-        if count > smallest_class_size: 
-          class_images = [(img_path, l) for img_path, l in images_with_labels if l == label]
-          undersampled_images = random.sample(class_images, smallest_class_size)
-          balanced_images_with_labels.extend(undersampled_images)
+        if count > smallest_class_size:
+            class_images = [
+                (img_path, l) for img_path, l in images_with_labels if l == label
+            ]
+            undersampled_images = random.sample(class_images, smallest_class_size)
+            balanced_images_with_labels.extend(undersampled_images)
 
         else:
-          class_images = [(img_path, l) for img_path, l in images_with_labels if l == label]
-          balanced_images_with_labels.extend(class_images)
+            class_images = [
+                (img_path, l) for img_path, l in images_with_labels if l == label
+            ]
+            balanced_images_with_labels.extend(class_images)
 
-    
     copy_path = f'./data/{config["dataset"]}_all_images'
     os.makedirs(copy_path, exist_ok=True)
 
-    for img_path, label in tqdm(balanced_images_with_labels, desc = "Copying Images"):
+    for img_path, label in tqdm(balanced_images_with_labels, desc='Copying Images'):
         img_name = os.path.basename(img_path)
         new_path = os.path.join(copy_path, f'{label}_{img_name}')
-        
+
         shutil.copy2(img_path, new_path)
 
     # split data
@@ -219,6 +222,3 @@ def prepare_classificaiton(config: dict):
             writer.write(writer_dict)
 
         writer.close()
-
-
-    

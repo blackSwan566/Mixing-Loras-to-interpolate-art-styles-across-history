@@ -3,11 +3,13 @@ from transformers import ViTForImageClassification
 from torchvision.models import resnet50
 import torch.nn as nn
 import pickle
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from torchvision import transforms
 import matplotlib.pyplot as plt
-import os
 from PIL import Image
+from ..utils.functions import extract_image_data
+import torch.nn.functional as F
+import json
+
 
 def inference_style_classification(config: dict, base_dir: str, device: str):
     # load labels
@@ -21,7 +23,9 @@ def inference_style_classification(config: dict, base_dir: str, device: str):
 
     # load model
     if config['model'] == 'vit':
-        model = ViTForImageClassification.from_pretrained(config['model_weights'], num_labels=num_classes)
+        model = ViTForImageClassification.from_pretrained(
+            config['model_weights'], num_labels=num_classes
+        )
         model.eval()
         model = model.to(device)
 
@@ -34,74 +38,62 @@ def inference_style_classification(config: dict, base_dir: str, device: str):
         model = model.to(device)
 
     # collect image paths
-    folder_path = config['folder_path']
-    images_path = [img for img in os.listdir(folder_path)]
+    extracted_data = extract_image_data(config['folder_path'])
 
     image_transforms = transforms.Compose(
         [
             transforms.Resize(224),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5537, 0.4837, 0.4230], std=[1346.6721, 1176.6603, 1029.2145])
+            transforms.Normalize(
+                mean=[0.5537, 0.4837, 0.4230], std=[1346.6721, 1176.6603, 1029.2145]
+            ),
         ]
     )
 
+    all_results = {}
 
-    predicted_labels = []
-    true_labels = []
-    images = []
+    for epoch, prompts in extracted_data.items():
+        all_results[epoch] = {}
 
-    for image_path in images_path:
-        # extract class TODO
-        true_labels.append('pop_art')
+        for prompt, image_list in prompts.items():
+            all_results[epoch][prompt] = {}
 
-        image_path = './images/' + image_path
-        image = Image.open(image_path).convert('RGB')
-        images.append(image)
+            for image_data in image_list:
+                image_path = image_data['file_path']
+                image = Image.open(image_path).convert('RGB')
 
-        pixel_values = image_transforms(image)
-        pixel_values = pixel_values.unsqueeze(0)
-        pixel_values = pixel_values.to(device)
+                pixel_values = image_transforms(image)
+                pixel_values = pixel_values.unsqueeze(0)
+                pixel_values = pixel_values.to(device)
 
-        # predict class
-        with torch.no_grad():
-            outputs = model(pixel_values)
+                # predict class
+                with torch.no_grad():
+                    outputs = model(pixel_values)
 
-            if config['model'] == 'vit':
-                logits = outputs.logits
+                    if config['model'] == 'vit':
+                        logits = outputs.logits
 
-            else:
-                logits = outputs
+                    else:
+                        logits = outputs
 
-            predicted_class_idx = torch.argmax(logits, dim=-1).item()
-            print(f'Image {image_path} predicted class id: {predicted_class_idx}')
-            predicted_labels.append(predicted_class_idx)
+                    probabilties = F.softmax(logits, dim=-1).cpu().numpy().tolist()
 
-    # convert labels back to text
-    print(predicted_labels)
-    predicted_labels = label_encoder.inverse_transform(predicted_labels)
-    print(predicted_labels)
-    # confusion matrix plot
-    # cm = confusion_matrix(predicted_labels, true_labels)
-    # disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=label_encoder.classes_)
-    # disp.plot(cmap=plt.cm.Blues)
-    # plt.title('confusion matrix')
-    # plt.xlabel('predicted labels')
-    # plt.ylabel('true label')
-    # plt.xticks(rotation=45, ha="right")
-    # plt.tight_layout()
-    # plt.savefig(f'{base_dir}/confusion_matrix.png')
+                    # convert probablities to class labels
+                    class_probabilities = {}
+                    for i, prob in enumerate(probabilties[0]):
+                        class_name = label_encoder.inverse_transform([i])[0]
+                        class_probabilities[class_name] = float(f'{prob:.4f}')
 
-    # plot images
-    num_images = len(images)
-    fig, axes = plt.subplots(1, num_images, figsize=(5*num_images, 5))
+                    all_results[epoch][prompt][image_path] = {
+                        'alpha1': image_data['alpha1'],
+                        'alpha2': image_data['alpha2'],
+                        'alpha3': image_data['alpha3'],
+                        'predicted_probabilities': class_probabilities,
+                        'true_label': epoch,
+                    }
 
-    for i, image in enumerate(images):
-        predicted_label = predicted_labels[i]
-        true_label = true_labels[i]
+    output_file = f'{base_dir}/results.json'
+    with open(output_file, 'w') as f:
+        json.dump(all_results, f, indent=4)
 
-        axes[i].imshow(image)
-        axes[i].set_title(f"Predicted: {predicted_label}\nTrue: {true_label}")
-        axes[i].axis('off') # Turn off axis labels
-    
-    plt.tight_layout()
-    plt.savefig(f'{base_dir}/images.png')
+    print(f'Results saved to {output_file}')
