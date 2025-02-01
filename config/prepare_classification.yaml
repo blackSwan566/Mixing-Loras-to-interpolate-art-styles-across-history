@@ -1,0 +1,6 @@
+version: 1
+model: 'vit'
+dataset: 'wikiart'
+style: 'early_renaissance'
+split: 'test'
+prompt: 'Style1'

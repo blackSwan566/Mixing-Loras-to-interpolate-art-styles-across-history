@@ -48,7 +48,7 @@ def merge_loras_v2(config: dict, base_dir: str, device: str):
         num_inference_steps=config['num_inference_steps'],
         guidance_scale=config['guidance_scale'],
     ).images[0]
-    image.save(f'{base_dir}/no_lora_{prompt}.png')
+    image.save(f'{base_dir}/no_lora.png')
 
     # add lora to pipe
     monkeypatch_or_replace_lora(pipe.unet, list_lora, r=config['r'])
@@ -64,5 +64,5 @@ def merge_loras_v2(config: dict, base_dir: str, device: str):
         guidance_scale=config['guidance_scale'],
     ).images[0]
     image.save(
-        f'{base_dir}/{config["blending_alpha1"]}_{config["blending_alpha2"]}_{config["blending_alpha3"]}_{prompt}.png'
+        f'{base_dir}/{config["blending_alpha1"]}_{config["blending_alpha2"]}_{config["blending_alpha3"]}.png'
     )

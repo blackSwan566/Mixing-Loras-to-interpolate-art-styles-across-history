@@ -1,0 +1,9 @@
+version: 2
+model: 'resnet'
+model_name: 'resnet50'
+dataset: 'wikiart'
+epochs: 200
+lr: 0.00001
+batch_size: 16
+weight_decay: 0.01
+patience: 10
