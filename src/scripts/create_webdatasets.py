@@ -9,6 +9,7 @@ import random
 from sklearn.preprocessing import LabelEncoder
 import pickle
 import shutil
+import splitfolders
 
 
 def precompute_data(config: dict, device: str):
@@ -42,13 +43,16 @@ def precompute_data(config: dict, device: str):
     if not os.path.isdir(shards_dir):
         os.mkdir(shards_dir)
 
-    subsets = ['train', 'val', 'test']
+    subsets = ['train', 'val']
     split_path = f'./data/{config["dataset"]}_split'
+
+    # create data splits
+    splitfolders.ratio(f'./data/{config["dataset"]}', seed=1337, output=split_path, ratio=(0.75, 0.25, 0.0))
 
     for subset in subsets:
         subset_dir = os.path.join(split_path, subset)
 
-        # create split folder
+        # create precomputed split folder
         precomputed_subset_dir = shards_dir + f'/{subset}'
         if not os.path.isdir(precomputed_subset_dir):
             os.mkdir(precomputed_subset_dir)
