@@ -47,7 +47,12 @@ def precompute_data(config: dict, device: str):
     split_path = f'./data/{config["dataset"]}_split'
 
     # create data splits
-    splitfolders.ratio(f'./data/{config["dataset"]}', seed=1337, output=split_path, ratio=(0.75, 0.25, 0.0))
+    splitfolders.ratio(
+        f'./data/{config["dataset"]}',
+        seed=1337,
+        output=split_path,
+        ratio=(0.75, 0.25, 0.0),
+    )
 
     for subset in subsets:
         subset_dir = os.path.join(split_path, subset)
@@ -116,7 +121,7 @@ def prepare_classificaiton(config: dict):
     """
 
     # collect all images
-    dataset_path = f'./data/{config["dataset"]}_relevant'
+    dataset_path = f'./data/{config["dataset"]}'
     random.seed(38)
 
     images_with_labels = []
