@@ -45,7 +45,7 @@ def inference_style_classification(config: dict, base_dir: str, device: str):
             transforms.Resize(224),
             transforms.ToTensor(),
             transforms.Normalize(
-                mean=[0.5537, 0.4837, 0.4230], std=[1346.6721, 1176.6603, 1029.2145]
+                mean=config['mean'], std=config['std'],
             ),
         ]
     )

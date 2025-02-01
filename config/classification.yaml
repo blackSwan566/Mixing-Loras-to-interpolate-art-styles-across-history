@@ -2,6 +2,8 @@ version: 2
 model: 'resnet'
 model_name: 'resnet50'
 dataset: 'wikiart'
+mean: [0.5537, 0.4837, 0.4230]
+std: [1346.6721, 1176.6603, 1029.2145]]
 epochs: 200
 lr: 0.00001
 batch_size: 16
