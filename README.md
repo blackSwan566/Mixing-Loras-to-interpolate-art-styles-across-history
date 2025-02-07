@@ -1,7 +1,7 @@
 # Mixing-Loras-to-interpolate-art-styles-across-history
 
 # About the project
-Low-Rank Adaptation Models (LoRAs) have been introduced to save computational costs and focus on one task without retraining the entire network. In the present project, we trained three LoRAs based on the CompVis/stable-diffusion-v1-4 model and images from three art eras: Early Renaissance, Expressionism, and Pop Art of the Wikiart dataset. We perform linear interpolation to merge the art eras into two versions. In V1, we merge two art eras; in V2, we merge three to look at paintings that merge across history. We did a qualitative analysis of promising results, on the one hand side, from images from the trained LoRAs and, on the other hand, from the merged LoRA Versions. We have identified recurring patterns regarding style and content for specific art eras and interpolation steps. Even in edge case images, we can find features from the respective art eras. In addition, we used the fine-tuned ResNet50 to classify the merged images into our three epochs. Our results showed that the classifier can classify images created by our merged loRAs as long as only two weights are merged.
+Low-Rank Adaptation Models (LoRAs) have been introduced to save computational costs and focus on one task without retraining the entire network (Edward J. et. al). In the present project, we trained three LoRAs based on the CompVis/stable-diffusion-v1-4 model and images from three art eras: Early Renaissance, Expressionism, and Pop Art of the Wikiart dataset. We perform linear interpolation to merge the art eras into two versions. In V1, we merge two art eras; in V2, we merge three to look at paintings that merge across history. We did a qualitative analysis of promising results, on the one hand side, from images from the trained LoRAs and, on the other hand, from the merged LoRA Versions. We have identified recurring patterns regarding style and content for specific art eras and interpolation steps. Even in edge case images, we can find features from the respective art eras. In addition, we used the fine-tuned ResNet50 to classify the merged images into our three epochs. Our results showed that the classifier can classify images created by our merged loRAs as long as only two weights are merged.
 
 
 # Project Setup
@@ -130,3 +130,26 @@ This will use the trained classifier for the images from the merged LoRAs. Keep 
 **quantitative_analysis.ipynb** creates the plots for the json from **classification_inference**. You have to adjust the cell file_path to the json file properly. Here is sample plot:
 
 <img src="./src/plots/grid_early_renaissance-expressionism_A%20painting%20of%20a%20woman%20in%20the%20city%20in%20Style1%20and%20Style3.png">
+
+
+@misc{hu2021loralowrankadaptationlarge,
+      title={LoRA: Low-Rank Adaptation of Large Language Models}, 
+      author={Edward J. Hu and Yelong Shen and Phillip Wallis and Zeyuan Allen-Zhu and Yuanzhi Li and Shean Wang and Lu Wang and Weizhu Chen},
+      year={2021},
+      eprint={2106.09685},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2106.09685}, 
+}
+
+@article{wikiart,
+  title={Improved ArtGAN for Conditional Synthesis of Natural Image and Artwork},
+  author={Tan, Wei Ren and Chan, Chee Seng and Aguirre, Hernan and Tanaka, Kiyoshi},
+  journal={IEEE Transactions on Image Processing},
+  volume    = {28},
+  number    = {1},
+  pages     = {394--409},
+  year      = {2019},
+  url       = {https://doi.org/10.1109/TIP.2018.2866698},
+  doi       = {10.1109/TIP.2018.2866698}
+}
