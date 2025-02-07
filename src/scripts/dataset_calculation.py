@@ -6,6 +6,13 @@ from tqdm import tqdm
 
 
 def calculate_mean_and_std(config: dict):
+    """
+    given a dataset calculates the mean and std for normalization
+    returns a string in the console
+
+    :param config: the config data for calculating the data
+    """
+
     transform = transforms.Compose(
         [transforms.Resize((224, 224)), transforms.ToTensor()]
     )

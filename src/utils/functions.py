@@ -106,8 +106,8 @@ def extract_image_data(root_dir: str):
                 )  # regex for files with 2 alpha values
 
                 # handles no_lora files
-                if match_no_lora:  
-                    alpha1 = None  
+                if match_no_lora:
+                    alpha1 = None
                     alpha2 = None
                     alpha3 = None
                     no_lora = True
@@ -136,7 +136,7 @@ def extract_image_data(root_dir: str):
                     )
 
                 # handles files with 3 alpha values
-                elif match_three_alpha:  
+                elif match_three_alpha:
                     alpha1 = float(match_three_alpha.group(1))
                     alpha2 = float(match_three_alpha.group(2))
                     alpha3 = float(match_three_alpha.group(3))
@@ -167,7 +167,7 @@ def extract_image_data(root_dir: str):
                     )
 
                 # handles 0.0_1.0 files
-                elif match_two_alpha: 
+                elif match_two_alpha:
                     alpha1 = float(match_two_alpha.group(1))
                     alpha2 = float(match_two_alpha.group(2))
                     alpha3 = None

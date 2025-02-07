@@ -10,6 +10,14 @@ from diffusers import (
 
 # Linear
 def merge_loras_v1(config: dict, base_dir: str, device: str):
+    """
+    merge two LoRA weights and synthesize an image
+
+    :param config: the config data for the merging e.g. path to model weights
+    :param base_dir: where to save the generated images
+    :param device: whether we train on cpu or gpu
+    """
+
     # Load weights from .pt
     lora1 = torch.load(config['w1'])
     lora2 = torch.load(config['w2'])

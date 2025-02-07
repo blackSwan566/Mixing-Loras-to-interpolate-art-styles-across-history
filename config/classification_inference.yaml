@@ -1,6 +1,8 @@
-version: 2
+version: 20
 model: 'resnet'
 model_name: 'resnet50'
 model_weights: 'src/data/classification/run2_2025-01-18T12:29:56_152264c353d0bb953b5642a7b812b94e8f9f9bb3/classification_weights.pth'
 dataset: 'wikiart'
-folder_path: './src/data/merge_loras_v2/run1'
+mean: [0.5537, 0.4837, 0.4230]
+std: [1346.6721, 1176.6603, 1029.2145]
+folder_path: './src/data/merge_loras_v1/run2'
