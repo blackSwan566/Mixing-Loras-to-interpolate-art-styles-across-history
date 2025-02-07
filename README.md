@@ -1,5 +1,9 @@
 # Mixing-Loras-to-interpolate-art-styles-across-history
 
+# About the project
+Low-Rank Adaptation Models (LoRAs) have been introduced to save computational costs and focus on one task without retraining the entire network. In the present project, we trained three LoRAs based on the CompVis/stable-diffusion-v1-4 model and images from three art eras: Early Renaissance, Expressionism, and Pop Art of the Wikiart dataset. We perform linear interpolation to merge the art eras into two versions. In V1, we merge two art eras; in V2, we merge three to look at paintings that merge across history. We did a qualitative analysis of promising results, on the one hand side, from images from the trained LoRAs and, on the other hand, from the merged LoRA Versions. We have identified recurring patterns regarding style and content for specific art eras and interpolation steps. Even in edge case images, we can find features from the respective art eras. In addition, we used the fine-tuned ResNet50 to classify the merged images into our three epochs. Our results showed that the classifier can classify images created by our merged loRAs as long as only two weights are merged.
+
+
 # Project Setup
 Generally every python command is combined with its corresponding config file in the **/config** folder. Make sure to change the configs in case you want to use different data, models or hyperparamteres.
 
