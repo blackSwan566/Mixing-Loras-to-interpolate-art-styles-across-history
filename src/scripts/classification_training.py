@@ -14,6 +14,14 @@ from copy import deepcopy
 
 
 def train_style_classification(config: dict, base_dir: str, device: str):
+    """
+    fine-tunes a model for classification task and saves the trained weights
+
+    :param config: the config data for the training e.g. model
+    :param base_dir: where the config and weights are saved
+    :param device: whether we train on cpu or gpu
+    """
+
     # load labels
     with open(
         f'./data/{config["dataset"]}_classification/label_encoder.pkl', 'rb'

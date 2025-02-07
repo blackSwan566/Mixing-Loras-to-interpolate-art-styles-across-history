@@ -12,6 +12,14 @@ import json
 
 
 def inference_style_classification(config: dict, base_dir: str, device: str):
+    """
+    takes a trained model and lets the trained classifier predict the merged images from lora_merge_v1 or lora_merge_v2
+    saves a json file with each image and the logits
+
+    :param config: the config data for inference e.g. path to model weights, image paths
+    :param base_dir: where the config and the json is saved
+    :param device: whether we train on cpu or gpu
+    """
     # load labels
     with open(
         f'./data/{config["dataset"]}_classification/label_encoder.pkl', 'rb'
